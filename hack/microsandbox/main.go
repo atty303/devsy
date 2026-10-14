@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	installLinuxCommand = "install-linux"
-	runSuiteCommand     = "run"
-	verifyReportCommand = "verify-report"
+	installLinuxCommand          = "install-linux"
+	runSuiteCommand              = "run"
+	verifyReportCommand          = "verify-report"
+	buildPerformanceToolsCommand = "build-performance-tools"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(
 			stderr,
-			"usage: devsy-ci-microsandbox <install-linux|run|verify-report>",
+			"usage: devsy-ci-microsandbox <install-linux|run|verify-report|build-performance-tools>",
 		)
 		return 2
 	}
@@ -35,6 +36,8 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		return runSuiteCLI(args[1:], stdout, stderr)
 	case verifyReportCommand:
 		return verifyReportCLI(args[1:], stdout, stderr)
+	case buildPerformanceToolsCommand:
+		return buildPerformanceToolsCLI(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
 		return 2
@@ -55,11 +58,21 @@ func installLinuxCLI(args []string, stdout, stderr io.Writer) int {
 }
 
 func runSuiteCLI(args []string, stdout, stderr io.Writer) int {
+	return runSuiteCLIWithRunner(args, stdout, stderr, commandRunner((*exec.Cmd).Run))
+}
+
+func runSuiteCLIWithRunner(args []string, stdout, stderr io.Writer, run commandRunner) int {
 	flags := flag.NewFlagSet(runSuiteCommand, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	cfg := suiteConfig{}
 	flags.StringVar(&cfg.label, "label", "", "Ginkgo suite label")
 	flags.IntVar(&cfg.expectedCount, "expected-count", 0, "required scenario count")
+	flags.StringVar(
+		&cfg.providerMode,
+		"provider-mode",
+		providerModeParity,
+		"provider label validation mode",
+	)
 	flags.StringVar(&cfg.repositoryDir, "repository-dir", ".", "Devsy checkout directory")
 	flags.StringVar(
 		&cfg.tempDir,
@@ -83,7 +96,7 @@ func runSuiteCLI(args []string, stdout, stderr io.Writer) int {
 	return runSuite(
 		context.Background(),
 		cfg,
-		commandRunner((*exec.Cmd).Run),
+		run,
 		commandOutput{stdout: stdout, stderr: stderr},
 	)
 }
@@ -94,17 +107,18 @@ func verifyReportCLI(args []string, stdout, stderr io.Writer) int {
 	report := flags.String("report", "", "Ginkgo JSON report path")
 	label := flags.String("label", "", "Ginkgo suite label")
 	count := flags.Int("expected-count", 0, "required scenario count")
+	mode := flags.String("provider-mode", providerModeParity, "provider label validation mode")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if flags.NArg() != 0 || !validReportArguments(*report, *label, *count) {
+	if flags.NArg() != 0 || !validReportArguments(*report, *label, *count, *mode) {
 		_, _ = fmt.Fprintln(
 			stderr,
-			"verify-report requires a report, label and positive even expected-count",
+			"verify-report requires a report, label, valid provider-mode and valid expected-count",
 		)
 		return 2
 	}
-	if err := validateReport(*report, *label, *count); err != nil {
+	if err := validateReport(*report, *label, *count, *mode); err != nil {
 		_, _ = fmt.Fprintf(stderr, "::error::%v\n", err)
 		return 1
 	}
@@ -119,6 +133,6 @@ func verifyReportCLI(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func validReportArguments(report, label string, count int) bool {
-	return report != "" && label != "" && isPositiveEven(count)
+func validReportArguments(report, label string, count int, mode string) bool {
+	return report != "" && label != "" && validProviderExpectation(mode, count)
 }

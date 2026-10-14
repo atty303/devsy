@@ -9,6 +9,7 @@ import (
 type suiteConfig struct {
 	label         string
 	expectedCount int
+	providerMode  string
 	repositoryDir string
 	tempDir       string
 	testTimeout   string

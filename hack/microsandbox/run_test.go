@@ -361,6 +361,164 @@ func writeSuiteReportFromCommand(cmd *exec.Cmd) error {
 	return os.WriteFile(reportPath, data, 0o600)
 }
 
+func writeExternalSuiteReportFromCommand(cmd *exec.Cmd) error {
+	var reportPath, label string
+	for _, arg := range cmd.Args {
+		if value, ok := strings.CutPrefix(arg, "-ginkgo.json-report="); ok {
+			reportPath = value
+		}
+		if value, ok := strings.CutPrefix(arg, "--ginkgo.label-filter="); ok {
+			label = value
+		}
+	}
+	if reportPath == "" || label == "" {
+		return errors.New("Ginkgo report or label argument missing")
+	}
+	data, err := json.Marshal(validExternalReportFor(label))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(reportPath, data, 0o600)
+}
+
+func TestRunSuitePerformanceEnvironmentAndArtifactOwnership(t *testing.T) {
+	cfg, tempDir := newSuiteRunFixture(t, performanceSuiteLabel)
+	for index, name := range performanceEnvironmentNames {
+		t.Setenv(name, "fixture-value-"+strconv.Itoa(index))
+	}
+	performancePath := createPerformanceArtifact(t, tempDir)
+	var commands [][]string
+	run := func(cmd *exec.Cmd) error {
+		commands = append(commands, append([]string(nil), cmd.Args...))
+		if suiteCommandIsChown(cmd) {
+			return nil
+		}
+		return writeSuiteReportFromCommand(cmd)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runSuite(
+		context.Background(),
+		cfg,
+		run,
+		commandOutput{stdout: &stdout, stderr: &stderr},
+	); code != 0 {
+		t.Fatalf("runSuite() = %d; stderr=%s", code, stderr.String())
+	}
+	requirePerformanceEnvironment(t, commands[0])
+	requirePerformanceChownTargets(t, commands, performancePath, filepath.Join(
+		tempDir,
+		"microsandbox-"+cfg.label+".json",
+	))
+}
+
+func TestRunSuitePerformanceChownFailurePreservesNativeExit(t *testing.T) {
+	cfg, tempDir := newSuiteRunFixture(t, performanceSuiteLabel)
+	performancePath := createPerformanceArtifact(t, tempDir)
+	var stderr bytes.Buffer
+	run := func(cmd *exec.Cmd) error {
+		if suiteCommandIsChown(cmd) {
+			if slices.Contains(cmd.Args, performancePath) {
+				return exitWithStatus(47)
+			}
+			return nil
+		}
+		if err := writeSuiteReportFromCommand(cmd); err != nil {
+			return err
+		}
+		return exitWithStatus(23)
+	}
+	code := runSuite(context.Background(), cfg, run, commandOutput{stderr: &stderr})
+	if code != 23 {
+		t.Fatalf("runSuite() = %d, want native exit status 23; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "could not make performance artifact readable") {
+		t.Fatalf("performance chown failure was not reported: %s", stderr.String())
+	}
+}
+
+func TestRunSuiteChownsPerformanceArtifactWhenGinkgoReportIsMissing(t *testing.T) {
+	cfg, tempDir := newSuiteRunFixture(t, performanceSuiteLabel)
+	performancePath := createPerformanceArtifact(t, tempDir)
+	var chownTargets []string
+	var stderr bytes.Buffer
+	run := func(cmd *exec.Cmd) error {
+		if suiteCommandIsChown(cmd) {
+			chownTargets = append(chownTargets, cmd.Args[len(cmd.Args)-1])
+			return nil
+		}
+		return exitWithStatus(23)
+	}
+	code := runSuite(context.Background(), cfg, run, commandOutput{stderr: &stderr})
+	if code != 23 {
+		t.Fatalf("runSuite() = %d, want native exit status 23; stderr=%s", code, stderr.String())
+	}
+	if !slices.Contains(chownTargets, performancePath) {
+		t.Fatalf("performance artifact was not chowned: %v", chownTargets)
+	}
+	if slices.Contains(chownTargets, filepath.Join(tempDir, "microsandbox-"+cfg.label+".json")) {
+		t.Fatalf("missing Ginkgo report was chowned: %v", chownTargets)
+	}
+	if !strings.Contains(stderr.String(), "cannot read Ginkgo JSON report") {
+		t.Fatalf("missing report error not retained: %s", stderr.String())
+	}
+}
+
+func createPerformanceArtifact(t *testing.T, tempDir string) string {
+	t.Helper()
+	path := filepath.Join(tempDir, "microsandbox-performance", "provider-performance.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"captured":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func requirePerformanceEnvironment(t *testing.T, args []string) {
+	t.Helper()
+	for index, name := range performanceEnvironmentNames {
+		want := name + "=fixture-value-" + strconv.Itoa(index)
+		if !slices.Contains(args, want) {
+			t.Errorf("performance invocation lacks %q: %v", want, args)
+		}
+	}
+}
+
+func requirePerformanceChownTargets(
+	t *testing.T,
+	commands [][]string,
+	performancePath, reportPath string,
+) {
+	t.Helper()
+	want := []string{performancePath, reportPath}
+	if len(commands) != len(want)+1 {
+		t.Fatalf("commands = %v, want test plus report and performance chown", commands)
+	}
+	for index, path := range want {
+		command := commands[index+1]
+		if !suiteCommandIsChownArgs(command) || command[len(command)-1] != path {
+			t.Errorf("chown command %d = %v, want target %q", index+1, command, path)
+		}
+	}
+}
+
+func TestPerformanceEnvironmentIsNotForwardedToOtherSuites(t *testing.T) {
+	cfg, _ := newSuiteRunFixture(t, "up-provider-microsandbox-images")
+	for index, name := range performanceEnvironmentNames {
+		t.Setenv(name, "fixture-value-"+strconv.Itoa(index))
+	}
+	args, err := suiteSudoArguments(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, name := range performanceEnvironmentNames {
+		if slices.Contains(args, name+"=fixture-value-"+strconv.Itoa(index)) {
+			t.Errorf("performance environment %s was forwarded to unrelated suite", name)
+		}
+	}
+}
+
 func suiteCommandIsChown(cmd *exec.Cmd) bool {
 	return suiteCommandIsChownArgs(cmd.Args)
 }

@@ -32,9 +32,14 @@ type selectedGinkgoSpec struct {
 	labels map[string]struct{}
 }
 
-func validateReport(path, label string, expectedCount int) error {
-	if !isPositiveEven(expectedCount) {
-		return errors.New("expected-count must be a positive even number")
+const (
+	providerModeParity   = "parity"
+	providerModeExternal = "external"
+)
+
+func validateReport(path, label string, expectedCount int, mode string) error {
+	if !validProviderExpectation(mode, expectedCount) {
+		return fmt.Errorf("expected-count %d is invalid for provider-mode %q", expectedCount, mode)
 	}
 	specs, err := readSuiteSpecs(path)
 	if err != nil {
@@ -44,7 +49,18 @@ func validateReport(path, label string, expectedCount int) error {
 	if err != nil {
 		return err
 	}
-	return validateSelectedSpecs(selected, expectedCount)
+	return validateSelectedSpecs(selected, expectedCount, mode)
+}
+
+func validProviderExpectation(mode string, expectedCount int) bool {
+	switch mode {
+	case providerModeParity:
+		return isPositiveEven(expectedCount)
+	case providerModeExternal:
+		return expectedCount > 0
+	default:
+		return false
+	}
 }
 
 func selectLabeledSpecs(
@@ -154,7 +170,7 @@ func validateSuiteExecution(suite ginkgoSuiteReport) error {
 	return nil
 }
 
-func validateSelectedSpecs(selected []selectedGinkgoSpec, expectedCount int) error {
+func validateSelectedSpecs(selected []selectedGinkgoSpec, expectedCount int, mode string) error {
 	providers := [2]int{}
 	for index, item := range selected {
 		provider, err := validateSelectedSpec(item, index)
@@ -162,6 +178,17 @@ func validateSelectedSpecs(selected []selectedGinkgoSpec, expectedCount int) err
 			return err
 		}
 		providers[provider]++
+	}
+	if mode == providerModeExternal {
+		if providers[0] != 0 || providers[1] != expectedCount {
+			return fmt.Errorf(
+				"provider label counts (builtin=%d, external=%d), expected all %d external",
+				providers[0],
+				providers[1],
+				expectedCount,
+			)
+		}
+		return nil
 	}
 	if providers[0] != expectedCount/2 || providers[1] != expectedCount/2 {
 		return fmt.Errorf(

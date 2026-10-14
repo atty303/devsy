@@ -9,8 +9,12 @@ import (
 )
 
 const (
+	skippedState          = "skipped"
 	reportTestLabel       = "up-provider-microsandbox-images"
 	numAttemptsKey        = "NumAttempts"
+	stateKey              = "State"
+	leafNodeTypeKey       = "LeafNodeType"
+	exactlyOneProviderErr = "exactly one provider label"
 	realRunError          = "real test run"
 	focusError            = "programmatic focus"
 	builtinProviderLabel  = "microsandbox-builtin"
@@ -19,7 +23,7 @@ const (
 
 func TestValidateReportAcceptsExactSuccessfulProviderMatrix(t *testing.T) {
 	path := writeReportFixture(t, validReportFor(reportTestLabel))
-	if err := validateReport(path, reportTestLabel, 2); err != nil {
+	if err := validateReport(path, reportTestLabel, 2, providerModeParity); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -28,9 +32,14 @@ func TestValidateReportAllowsUnselectedSkippedSpecs(t *testing.T) {
 	report := validReportFor(reportTestLabel)
 	suite := report[0].(map[string]any)
 	specs := suite["SpecReports"].([]any)
-	specs = append(specs, map[string]any{"State": "skipped", numAttemptsKey: 0})
+	specs = append(specs, map[string]any{stateKey: skippedState, numAttemptsKey: 0})
 	suite["SpecReports"] = specs
-	if err := validateReport(writeReportFixture(t, report), reportTestLabel, 2); err != nil {
+	if err := validateReport(
+		writeReportFixture(t, report),
+		reportTestLabel,
+		2,
+		providerModeParity,
+	); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -54,7 +63,7 @@ func TestValidateReportRejectsMissingMalformedAndWrongRoot(t *testing.T) {
 
 func assertReportErrorContains(t *testing.T, path, want string) {
 	t.Helper()
-	err := validateReport(path, reportTestLabel, 2)
+	err := validateReport(path, reportTestLabel, 2, providerModeParity)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("validateReport error = %v, want %q", err, want)
 	}
@@ -100,7 +109,12 @@ func TestValidateReportRequiresExplicitSuiteEvidence(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			report := validReportFor(reportTestLabel)
 			test.edit(report[0].(map[string]any))
-			err := validateReport(writeReportFixture(t, report), reportTestLabel, 2)
+			err := validateReport(
+				writeReportFixture(t, report),
+				reportTestLabel,
+				2,
+				providerModeParity,
+			)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validateReport() error = %v, want %q", err, test.want)
 			}
@@ -115,7 +129,7 @@ func TestValidateReportRejectsMalformedSpecRecords(t *testing.T) {
 		func(s map[string]any) { s["ContainerHierarchyLabels"] = []any{"not-a-label-list"} },
 		func(s map[string]any) { s["ContainerHierarchyLabels"] = []any{nil} },
 		func(s map[string]any) { s["ContainerHierarchyLabels"] = []any{[]any{"suite-label", nil}} },
-		func(s map[string]any) { s["LeafNodeType"] = 7 },
+		func(s map[string]any) { s[leafNodeTypeKey] = 7 },
 	} {
 		report := validReportFor(reportTestLabel)
 		mutate(report[0].(map[string]any)["SpecReports"].([]any)[0].(map[string]any))
@@ -129,6 +143,7 @@ func TestValidateReportRejectsMalformedSpecRecords(t *testing.T) {
 		path,
 		reportTestLabel,
 		2,
+		providerModeParity,
 	); err == nil ||
 		!strings.Contains(err.Error(), "malformed spec") {
 		t.Fatalf("non-object spec error = %v", err)
@@ -136,10 +151,10 @@ func TestValidateReportRejectsMalformedSpecRecords(t *testing.T) {
 }
 
 func TestValidateReportRejectsSkippedPendingAndFailedSelectedSpecs(t *testing.T) {
-	for _, state := range []string{"skipped", "pending", "failed"} {
+	for _, state := range []string{skippedState, "pending", "failed"} {
 		t.Run(state, func(t *testing.T) {
 			report := validReportFor(reportTestLabel)
-			report[0].(map[string]any)["SpecReports"].([]any)[0].(map[string]any)["State"] = state
+			report[0].(map[string]any)["SpecReports"].([]any)[0].(map[string]any)[stateKey] = state
 			requireReportFailure(t, report, "not passed")
 		})
 	}
@@ -152,7 +167,7 @@ func TestValidateReportRejectsRetryAndNonItSelectedSpec(t *testing.T) {
 		want  string
 	}{
 		"retry":     {key: numAttemptsKey, value: 2, want: "expected one"},
-		"not an It": {key: "LeafNodeType", value: "ReportEntry", want: "not an It spec"},
+		"not an It": {key: leafNodeTypeKey, value: "ReportEntry", want: "not an It spec"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			report := validReportFor(reportTestLabel)
@@ -176,6 +191,7 @@ func TestValidateReportRejectsWrongLabelAndCount(t *testing.T) {
 			path,
 			test.label,
 			test.count,
+			providerModeParity,
 		); err == nil ||
 			!strings.Contains(err.Error(), test.want) {
 			t.Errorf("validateReport(%q, %d) = %v", test.label, test.count, err)
@@ -189,11 +205,11 @@ func TestValidateReportRejectsProviderCoverageErrors(t *testing.T) {
 		labels []string
 		want   string
 	}{
-		{"missing", nil, "exactly one provider label"},
+		{"missing", nil, exactlyOneProviderErr},
 		{
 			"ambiguous",
 			[]string{builtinProviderLabel, externalProviderLabel},
-			"exactly one provider label",
+			exactlyOneProviderErr,
 		},
 		{"unbalanced", []string{builtinProviderLabel}, "provider label counts"},
 	}
@@ -208,7 +224,7 @@ func TestValidateReportRejectsProviderCoverageErrors(t *testing.T) {
 
 func requireReportFailure(t *testing.T, report any, want string) {
 	t.Helper()
-	err := validateReport(writeReportFixture(t, report), reportTestLabel, 2)
+	err := validateReport(writeReportFixture(t, report), reportTestLabel, 2, providerModeParity)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("validateReport error = %v, want %q", err, want)
 	}
@@ -220,9 +236,99 @@ func TestValidateReportRequiresPositiveEvenCount(t *testing.T) {
 			"",
 			reportTestLabel,
 			count,
+			providerModeParity,
 		); err == nil ||
-			!strings.Contains(err.Error(), "positive even") {
+			!strings.Contains(err.Error(), "invalid") {
 			t.Errorf("expected count %d error = %v", count, err)
+		}
+	}
+}
+
+func TestValidateReportAcceptsThreeExternalSpecs(t *testing.T) {
+	path := writeReportFixture(t, validExternalReportFor(reportTestLabel))
+	if err := validateReport(path, reportTestLabel, 3, providerModeExternal); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateReportExternalModeRejectsProviderLabelErrors(t *testing.T) {
+	cases := []struct {
+		name   string
+		labels []string
+		want   string
+	}{
+		{"builtin", []string{builtinProviderLabel}, "expected all 3 external"},
+		{"mixed", []string{builtinProviderLabel}, "expected all 3 external"},
+		{"missing", nil, exactlyOneProviderErr},
+		{
+			"ambiguous",
+			[]string{builtinProviderLabel, externalProviderLabel},
+			exactlyOneProviderErr,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			report := validExternalReportFor(reportTestLabel)
+			specs := report[0].(map[string]any)["SpecReports"].([]any)
+			if test.name == "builtin" {
+				for _, raw := range specs {
+					raw.(map[string]any)["LeafNodeLabels"] = test.labels
+				}
+			} else {
+				specs[0].(map[string]any)["LeafNodeLabels"] = test.labels
+			}
+			err := validateReport(
+				writeReportFixture(t, report),
+				reportTestLabel,
+				3,
+				providerModeExternal,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateReport() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateReportExternalModeRejectsSkippedOrRetriedSpecs(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		field string
+		value any
+		want  string
+	}{
+		{skippedState, stateKey, skippedState, "not passed"},
+		{"retried", numAttemptsKey, 2, "expected one"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := validExternalReportFor(reportTestLabel)
+			selected := report[0].(map[string]any)["SpecReports"].([]any)[0].(map[string]any)
+			selected[test.field] = test.value
+			err := validateReport(
+				writeReportFixture(t, report),
+				reportTestLabel,
+				3,
+				providerModeExternal,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateReport() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateReportRejectsInvalidProviderModeAndCount(t *testing.T) {
+	path := writeReportFixture(t, validExternalReportFor(reportTestLabel))
+	for _, test := range []struct {
+		mode  string
+		count int
+	}{
+		{providerModeParity, 3},
+		{providerModeExternal, 0},
+		{unknownProviderMode, 3},
+	} {
+		if err := validateReport(path, reportTestLabel, test.count, test.mode); err == nil {
+			t.Errorf("validateReport(%q, %d) unexpectedly succeeded", test.mode, test.count)
 		}
 	}
 }
@@ -247,8 +353,8 @@ func validReportFor(label string) []any {
 		specs[index] = map[string]any{
 			"ContainerHierarchyLabels": [][]string{{label}},
 			"LeafNodeLabels":           []string{providers[index%len(providers)]},
-			"LeafNodeType":             "It",
-			"State":                    "passed",
+			leafNodeTypeKey:            "It",
+			stateKey:                   "passed",
 			numAttemptsKey:             1,
 		}
 	}
@@ -258,4 +364,21 @@ func validReportFor(label string) []any {
 		"SuiteHasProgrammaticFocus": false,
 		"SpecReports":               specs,
 	}}
+}
+
+func validExternalReportFor(label string) []any {
+	report := validReportFor(label)
+	suite := report[0].(map[string]any)
+	specs := suite["SpecReports"].([]any)
+	specs = append(specs, map[string]any{
+		"ContainerHierarchyLabels": [][]string{{label}},
+		"LeafNodeLabels":           []string{externalProviderLabel},
+		leafNodeTypeKey:            "It",
+		stateKey:                   "passed",
+		numAttemptsKey:             1,
+	})
+	specs[0].(map[string]any)["LeafNodeLabels"] = []string{externalProviderLabel}
+	specs[1].(map[string]any)["LeafNodeLabels"] = []string{externalProviderLabel}
+	suite["SpecReports"] = specs
+	return report
 }

@@ -12,7 +12,26 @@ import (
 	"strconv"
 )
 
-const managedPolicyLabel = "up-provider-microsandbox-managed-recreate"
+const (
+	managedPolicyLabel    = "up-provider-microsandbox-managed-recreate"
+	performanceSuiteLabel = "up-provider-microsandbox"
+)
+
+var performanceEnvironmentNames = []string{
+	"DEVSY_TEST_RUNTIME_SPAWN_PROBE",
+	"DEVSY_TEST_RUNTIME_SUPERVISOR",
+	"DEVSY_TEST_RUNTIME_PERFORMANCE_DIR",
+	"DEVSY_TEST_RUNTIME_REVISION",
+	"DEVSY_TEST_RUNTIME_SDK_VERSION",
+}
+
+var requiredSuiteEnvironmentNames = []string{
+	"DEVSY_REQUIRE_MICROSANDBOX",
+	"GH_USERNAME",
+	"GH_ACCESS_TOKEN",
+	"GH_CREDENTIAL_USERNAME",
+	"PATH",
+}
 
 var suiteLabelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
 
@@ -120,8 +139,12 @@ func validateSuiteConfig(cfg suiteConfig) error {
 	if cfg.label == "" || !isValidSuiteLabel(cfg.label) {
 		return fmt.Errorf("invalid Ginkgo label: %s", cfg.label)
 	}
-	if !isPositiveEven(cfg.expectedCount) {
-		return errors.New("expected-spec-count must be a positive even integer")
+	if !validProviderExpectation(providerModeOrDefault(cfg.providerMode), cfg.expectedCount) {
+		return fmt.Errorf(
+			"expected-spec-count %d is invalid for provider-mode %q",
+			cfg.expectedCount,
+			providerModeOrDefault(cfg.providerMode),
+		)
 	}
 	if !directoryExists(cfg.repositoryDir) {
 		return errors.New("repository directory is required")
@@ -139,6 +162,13 @@ func isPositiveEven(value int) bool {
 	return value > 0 && value%2 == 0
 }
 
+func providerModeOrDefault(mode string) string {
+	if mode == "" {
+		return providerModeParity
+	}
+	return mode
+}
+
 func directoryExists(path string) bool {
 	if path == "" {
 		return false
@@ -152,37 +182,61 @@ func isValidSuiteLabel(label string) bool {
 }
 
 func suiteSudoArguments(cfg suiteConfig) ([]string, error) {
-	names := []string{
-		"DEVSY_REQUIRE_MICROSANDBOX", "GH_USERNAME", "GH_ACCESS_TOKEN",
-		"GH_CREDENTIAL_USERNAME", "PATH",
+	values, err := requiredSuiteEnvironment()
+	if err != nil {
+		return nil, err
 	}
-	values := make([]string, 0, len(names)+3)
-	for _, name := range names {
+	kubeconfig, err := configuredKubeconfig()
+	if err != nil {
+		return nil, err
+	}
+	values = append(values, "KUBECONFIG="+kubeconfig)
+	if dockerHost := os.Getenv("DOCKER_HOST"); dockerHost != "" {
+		values = append(values, "DOCKER_HOST="+dockerHost)
+	}
+	return append(values, suiteSpecificEnvironment(cfg)...), nil
+}
+
+func requiredSuiteEnvironment() ([]string, error) {
+	values := make([]string, 0, len(requiredSuiteEnvironmentNames)+3)
+	for _, name := range requiredSuiteEnvironmentNames {
 		value, ok := os.LookupEnv(name)
 		if !ok || value == "" {
 			return nil, fmt.Errorf("%s must be set by the workflow", name)
 		}
 		values = append(values, name+"="+value)
 	}
+	return values, nil
+}
+
+func configuredKubeconfig() (string, error) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
 		home := os.Getenv("HOME")
 		if home == "" {
-			return nil, errors.New("HOME must be set to resolve the default KUBECONFIG")
+			return "", errors.New("HOME must be set to resolve the default KUBECONFIG")
 		}
 		kubeconfig = filepath.Join(home, ".kube", "config")
 	}
-	values = append(values, "KUBECONFIG="+kubeconfig)
-	if dockerHost := os.Getenv("DOCKER_HOST"); dockerHost != "" {
-		values = append(values, "DOCKER_HOST="+dockerHost)
-	}
+	return kubeconfig, nil
+}
+
+func suiteSpecificEnvironment(cfg suiteConfig) []string {
+	var values []string
 	if cfg.label == managedPolicyLabel {
 		values = append(values,
 			"DEVSY_REQUIRE_MSB_MANAGED_POLICY_FIXTURE=true",
 			"RUNNER_TEMP="+cfg.tempDir,
 		)
 	}
-	return values, nil
+	if cfg.label == performanceSuiteLabel {
+		for _, name := range performanceEnvironmentNames {
+			if value := os.Getenv(name); value != "" {
+				values = append(values, name+"="+value)
+			}
+		}
+	}
+	return values
 }
 
 func validateSuiteReport(
@@ -190,6 +244,10 @@ func validateSuiteReport(
 	cfg suiteConfig,
 	output commandOutput,
 ) int {
+	var performanceChownErr error
+	if cfg.label == performanceSuiteLabel {
+		performanceChownErr = chownPerformanceArtifact(run, cfg.tempDir, output)
+	}
 	reportPath := filepath.Join(cfg.tempDir, "microsandbox-"+cfg.label+".json")
 	uidGid := strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
 	if _, err := os.Stat(reportPath); err == nil {
@@ -205,9 +263,17 @@ func validateSuiteReport(
 		_, _ = fmt.Fprintf(output.stderr, "::error::could not inspect Ginkgo report: %v\n", err)
 		return 1
 	}
-	if err := validateReport(reportPath, cfg.label, cfg.expectedCount); err != nil {
+	if err := validateReport(
+		reportPath,
+		cfg.label,
+		cfg.expectedCount,
+		providerModeOrDefault(cfg.providerMode),
+	); err != nil {
 		_, _ = fmt.Fprintf(output.stderr, "::error::%v\n", err)
 		return 1
+	}
+	if performanceChownErr != nil {
+		return commandExitCode(performanceChownErr)
 	}
 	if _, err := fmt.Fprintf(
 		output.stdout,
@@ -218,6 +284,62 @@ func validateSuiteReport(
 		return 1
 	}
 	return 0
+}
+
+func chownPerformanceArtifact(run commandRunner, tempDir string, output commandOutput) error {
+	directory := filepath.Join(tempDir, "microsandbox-performance")
+	info, err := os.Lstat(directory)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		_, _ = fmt.Fprintf(
+			output.stderr,
+			"::error::could not inspect performance artifact: %v\n",
+			err,
+		)
+		return err
+	}
+	if !info.IsDir() {
+		err := errors.New("performance artifact directory is not a directory")
+		_, _ = fmt.Fprintf(
+			output.stderr,
+			"::error::could not inspect performance artifact: %v\n",
+			err,
+		)
+		return err
+	}
+	path := filepath.Join(directory, "provider-performance.json")
+	info, err = os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		_, _ = fmt.Fprintf(
+			output.stderr,
+			"::error::could not inspect performance artifact: %v\n",
+			err,
+		)
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		err := errors.New("performance artifact is not a regular file")
+		_, _ = fmt.Fprintf(
+			output.stderr,
+			"::error::could not inspect performance artifact: %v\n",
+			err,
+		)
+		return err
+	}
+	uidGid := strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
+	if err := run(exec.Command("sudo", "chown", uidGid, path)); err != nil {
+		_, _ = fmt.Fprintln(
+			output.stderr,
+			"::error::could not make performance artifact readable for artifact upload",
+		)
+		return err
+	}
+	return nil
 }
 
 type suiteOutputCapture struct {

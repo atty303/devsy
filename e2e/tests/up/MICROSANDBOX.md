@@ -1,7 +1,7 @@
 # MicroSandbox integration tests
 
-Each capability has a Ginkgo label and scenario file. The built-in and external
-providers run the same contracts. Keep scenario assertions in those files so
+Each capability has a Ginkgo label and scenario file. Parity suites run the same
+contracts against the built-in and external providers. Keep scenario assertions in those files so
 resource, ownership and lifecycle expectations remain visible.
 
 ## Shared setup
@@ -29,16 +29,22 @@ The dedicated `integration-tests-microsandbox` job in
 artifact uploads. The Go utility in `hack/microsandbox` installs and checks the
 pinned Linux bundle and owns test execution, managed fixture selection, output
 capture and report validation. The Linux build job supplies its CI-only executable;
-it is not a Devsy release artifact. Each suite still gets a fresh runner, a 25-minute job limit and a 20-minute test limit,
-with one attempt. The checked runtime bundle, build artifacts, required KVM gate
+it is not a Devsy release artifact. Each suite still gets a fresh runner, a
+25-minute job limit and a 20-minute test limit, with one attempt. The checked
+runtime bundle, build artifacts, required KVM gate
 and credentials are configured once in the job definition.
 
 Each matrix entry names its Ginkgo label and expected scenario count.
 The helper's `verify-report` command requires a real successful run with that
 exact count, split equally between the explicit `microsandbox-builtin` and
-`microsandbox-external` labels. Missing cases, skips, retries, dry runs and
-programmatic focus fail the gate. Reports and test output are retained even when
-the test command fails.
+`microsandbox-external` labels by default. A contract specific to the published
+provider uses an explicit `provider-mode: external` catalogue entry and requires
+every selected case to carry only the external provider label. Missing cases,
+skips, retries, dry runs and programmatic focus fail the gate. Reports and test
+output are retained even when the test command fails.
+
+Fixture and performance unit tests run by package in the existing unit-test jobs,
+so additions do not require maintaining a second test-name list.
 
 To add a scenario:
 
@@ -50,6 +56,60 @@ To add a scenario:
 A new suite needs a catalogue entry only when it has a separate contract or
 isolation requirement. Avoid copying runner setup or adding a job for each
 individual assertion.
+
+## Published-provider registry consumption
+
+The Linux-only `up-provider-microsandbox-registry-consumer` suite exercises the
+production external host's Runtime Protocol `RunImage` path with the installed,
+checksum-verified provider. Its three external-only cases cover an owned TLS
+registry through a restricted CONNECT proxy, refusal without the fixture CA,
+and refusal without registry credentials. A private credential helper records
+the direct parent executable digest and operation identity without recording
+credentials. Successful image responses are checked against their actual body
+digests and byte counts, and the positive case verifies a guest marker.
+
+This contract calls `RunImage` directly because ordinary `up` resolves image
+metadata before invoking the provider. It proves the published provider's image
+consumer; ordinary workspace orchestration and remote agent binary preparation
+have separate contracts. Each case owns fresh runtime state and an immutable
+image reference. Registry seeding finishes before the measured listeners start,
+and fixture shutdown joins active handlers before observations are inspected.
+
+The previous 74-case native parity baseline remains evidence for those existing
+rows only. This external-only row brings the configured catalogue to 77 cases;
+the earlier 74-case run does not prove the new consumer cases or the expanded
+catalogue. Acceptance requires fresh current-head native reports for all rows.
+
+On Linux, the E2E test binary also serves as the private Docker credential helper.
+Its `TestMain` preserves the production runtime-supervisor dispatch and recognizes
+the helper only at its canonical, current-user-owned private path. Other test
+invocations retain the normal test runner path.
+
+## Runtime startup measurements
+
+The existing two-case lifecycle label optionally captures its ordinary fresh
+and stop/resume `up` commands for the external provider when CI supplies all five
+performance inputs: `DEVSY_TEST_RUNTIME_SPAWN_PROBE`,
+`DEVSY_TEST_RUNTIME_SUPERVISOR`, `DEVSY_TEST_RUNTIME_PERFORMANCE_DIR`,
+`DEVSY_TEST_RUNTIME_REVISION`, and `DEVSY_TEST_RUNTIME_SDK_VERSION`. The
+built-in case retains its existing path. No new suite, VM, deadline or latency
+threshold is added. After both commands succeed, the helper stages the published
+runtime from `Agent.Binaries`, verifies its manifest checksum and compares direct
+and supervised Info/Find launches in direct/supervised/supervised/direct order.
+Each run records one first launch and 100 warm samples with process-reaping checks.
+The same Go CI helper builds both tools through `build-performance-tools` from
+the unreplaced Runtime SDK version in `go.mod`. The producer uploads the tools
+and their SDK-version marker for native jobs to reuse. Their build metadata and
+selected supervisor digest are verified before accepting reports.
+
+The retained JSON includes the provider source, runtime digest, checkout revision,
+SDK version, command wall time and filtered startup-event durations. Startup events
+measure launch/handshake/dispense before RPC; they exclude binary resolution, RPC
+and reaping and must not be described as total plugin overhead. The comparison
+runs after both ordinary `up` captures so it does not prewarm their provider path.
+It measures warm host caches, not a cold-cache or end-to-end speedup guarantee.
+Raw probe stderr and environment values are not included in the performance artifact.
+Normal suites remain inactive when these optional CI paths are unset.
 
 ## Managed policy boundary
 

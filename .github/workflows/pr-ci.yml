@@ -134,6 +134,13 @@ jobs:
           go test -race -short -count=1 -v ./e2e/tests/up-docker-compose \
             -run '^TestExpectedUIDMapping$'
 
+      - name: test workspace fixture helpers
+        run: go test -race -short -count=1 -timeout 90s ./e2e/tests/up
+
+      - name: test Linux registry fixture
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 -timeout 90s ./e2e/framework/registryfixture
+
   provider-update-windows:
     name: Provider Update Tests (windows-latest)
     needs: [changes]
@@ -256,6 +263,17 @@ jobs:
         env:
           CGO_ENABLED: 0
         run: go build -trimpath -o "${RUNNER_TEMP}/devsy-ci-microsandbox" ./hack/microsandbox
+
+      - name: build pinned runtime performance tools
+        if: runner.os == 'Linux'
+        run: '"${RUNNER_TEMP}/devsy-ci-microsandbox" build-performance-tools --output-dir "${RUNNER_TEMP}/runtime-performance-tools"'
+
+      - name: upload runtime performance tools
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-performance-tools-linux
+          path: ${{ runner.temp }}/runtime-performance-tools/
 
       - name: upload MicroSandbox CI helper
         if: runner.os == 'Linux'
@@ -407,6 +425,9 @@ jobs:
             expected-spec-count: 6
           - label: up-provider-microsandbox-compatibility
             expected-spec-count: 2
+          - label: up-provider-microsandbox-registry-consumer
+            expected-spec-count: 3
+            provider-mode: external
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -427,6 +448,28 @@ jobs:
         with:
           name: e2e-test-linux
           path: ./e2e/
+
+      - name: download runtime performance tools
+        if: matrix.label == 'up-provider-microsandbox'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runtime-performance-tools-linux
+          path: ${{ runner.temp }}/runtime-performance-tools/
+
+      - name: prepare runtime performance capture
+        if: matrix.label == 'up-provider-microsandbox'
+        shell: bash
+        run: |
+          chmod +x "${RUNNER_TEMP}/runtime-performance-tools/devsy-runtime-spawn-probe" \
+            "${RUNNER_TEMP}/runtime-performance-tools/devsy-runtime-supervisor"
+          install -d -m 700 "${RUNNER_TEMP}/microsandbox-performance"
+          {
+            echo "DEVSY_TEST_RUNTIME_SPAWN_PROBE=${RUNNER_TEMP}/runtime-performance-tools/devsy-runtime-spawn-probe"
+            echo "DEVSY_TEST_RUNTIME_SUPERVISOR=${RUNNER_TEMP}/runtime-performance-tools/devsy-runtime-supervisor"
+            echo "DEVSY_TEST_RUNTIME_PERFORMANCE_DIR=${RUNNER_TEMP}/microsandbox-performance"
+            echo "DEVSY_TEST_RUNTIME_REVISION=${{ github.sha }}"
+            echo "DEVSY_TEST_RUNTIME_SDK_VERSION=$(cat "${RUNNER_TEMP}/runtime-performance-tools/sdk-version")"
+          } >> "$GITHUB_ENV"
 
       - name: download MicroSandbox CI helper
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -466,7 +509,7 @@ jobs:
           GH_CREDENTIAL_USERNAME: x-access-token
           TEST_TIMEOUT: 1200s
           DEVSY_REQUIRE_MICROSANDBOX: "true"
-        run: '"${RUNNER_TEMP}/devsy-ci-microsandbox" run --label "${{ matrix.label }}" --expected-count "${{ matrix.expected-spec-count }}"'
+        run: '"${RUNNER_TEMP}/devsy-ci-microsandbox" run --label "${{ matrix.label }}" --expected-count "${{ matrix.expected-spec-count }}" --provider-mode "${{ matrix.provider-mode || ''parity'' }}"'
 
       - name: upload MicroSandbox test evidence
         if: always()
@@ -477,6 +520,15 @@ jobs:
             ${{ runner.temp }}/microsandbox-${{ matrix.label }}.json
             ${{ runner.temp }}/microsandbox-${{ matrix.label }}.log
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: upload runtime performance evidence
+        if: always() && matrix.label == 'up-provider-microsandbox'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: microsandbox-runtime-performance
+          path: ${{ runner.temp }}/microsandbox-performance/provider-performance.json
+          if-no-files-found: error
           retention-days: 14
 
   integration-tests:
