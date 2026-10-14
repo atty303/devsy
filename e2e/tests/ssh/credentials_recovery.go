@@ -42,7 +42,7 @@ func cleanupRelay(ctx context.Context, command *exec.Cmd) error {
 
 var _ = ginkgo.Describe(
 	"credential relay recovery",
-	ginkgo.Label("ssh-credentials-recovery"),
+	ginkgo.Label("ssh", "ssh-credentials-recovery"),
 	func() {
 		var wd, root string
 		ginkgo.BeforeEach(func() {
