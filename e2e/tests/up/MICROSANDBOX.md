@@ -105,10 +105,36 @@ Devsy agent endpoint stays available; this is workspace-runtime reuse, not an
 offline-agent executable guarantee. Workspace, container and server cleanup
 have independent bounded attempts.
 
-This external-only row brings the configured catalogue to 15 suites/78 cases
+The remote-agent acceptance expanded the catalogue to 15 suites/78 cases
 (37 built-in, 41 external). Earlier 77-case consumer reports do not prove the
 remote-agent case. Its native Linux/amd64 KVM report must pass once without
 selected skips; source checks, fixture unit tests and dry runs cannot prove it.
+
+## Existing-workspace source migration
+
+The `up-provider-microsandbox-source-migration` external-only row covers explicit
+`provider set-source` migration from the built-in MicroSandbox descriptor to the
+published external provider, for both running and stopped workspaces. Each case
+starts with a unique provider/workspace/volume and user-provided options. It
+checks stored source and driver identity, successful activation, preserved
+provider name/default/options, workspace and SSH records, VM creation time,
+root data, named-volume data and a host bind marker.
+
+The running case requires the same guest boot ID through migration and a later
+`up`. The stopped case checks that migration leaves the VM stopped before any
+command resumes it; subsequent `up` must start that same VM with its data intact.
+Deletion must remove the migrated workspace record and the exact owned sandbox.
+Independent cleanup attempts cover the workspace, sandbox fallback and volume.
+The command-package unit test separately covers activation failure after a
+committed replacement: it retains the replacement source and workspace data,
+records the initialization error and preserves user options and default choice.
+
+This row brings the configured catalogue to 16 suites/80 cases (37 built-in,
+43 external). It requires two actual native cases, each passed once
+without selected skips. Compilation and dry-run registration are not migration
+proof. Stored internal descriptors refresh executable blocks; they do not
+implicitly migrate driver or binaries. A future bundled-default transition must
+retain a literal legacy built-in fixture for these starting workspaces.
 
 ## Runtime startup measurements
 
