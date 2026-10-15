@@ -11,6 +11,7 @@ import (
 	client2 "github.com/devsy-org/devsy/pkg/client"
 	"github.com/devsy-org/devsy/pkg/config"
 	"github.com/devsy-org/devsy/pkg/log"
+	"github.com/devsy-org/devsy/pkg/options/resolver"
 	"github.com/devsy-org/devsy/pkg/platform"
 	"github.com/devsy-org/devsy/pkg/provider"
 	"github.com/devsy-org/devsy/pkg/types"
@@ -19,9 +20,10 @@ import (
 var ErrNoWorkspaceFound = errors.New("no workspace found")
 
 type ProviderWithOptions struct {
-	Config *provider.ProviderConfig `json:"config,omitempty"`
-	State  *config.ProviderConfig   `json:"state,omitempty"`
-	Status provider.InitState       `json:"status,omitempty"`
+	Config     *provider.ProviderConfig `json:"config,omitempty"`
+	State      *config.ProviderConfig   `json:"state,omitempty"`
+	Status     provider.InitState       `json:"status,omitempty"`
+	Deprecated bool                     `json:"deprecated,omitempty"`
 }
 
 type ProviderParams struct {
@@ -66,6 +68,11 @@ func LoadAllProviders(
 	}
 
 	for name, entry := range retProviders {
+		if entry.Config != nil {
+			options := provider.ToOptions(nil, nil, devsyConfig.ProviderOptions(entry.Config.Name))
+			driver := resolver.ResolveDefaultValue(entry.Config.Agent.Driver, options)
+			entry.Deprecated = driver == provider.MicrosandboxDriver
+		}
 		status, err := provider.ResolveInitState(devsyConfig.DefaultContext, name, entry.State)
 		if err != nil {
 			log.Warnf("error resolving init state for provider %s: %v", name, err)
