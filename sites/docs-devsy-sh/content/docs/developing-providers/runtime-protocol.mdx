@@ -39,7 +39,7 @@ For MicroSandbox, explicit replacement requires v0.7.7 or newer even with worksp
 
 The first client frame is exactly one ExecStart containing argv. Later frames contain stdin bytes or exactly one CloseStdin; the client then closes its send side. Data after CloseStdin, repeated Start, unset payloads and empty stdin data frames, and unexpected EOF before CloseStdin are InvalidArgument. v1 Devsy callers use `tty=false`; runtimes reject unsupported TTY requests.
 
-Each side uses one send pump and one receive loop. Data chunks should be at most 32 KiB. Empty input is represented by CloseStdin with no preceding data frames. Stdout/stderr are separate byte streams, with no text decoding or PTY. The receiver drains output before exactly one terminal ExecExit. Command success requires `exit_code == 0` and an empty `signal`. A nonempty `signal` means command failure regardless of `exit_code`, including its protobuf default of zero. Ordinary nonzero or signal-terminated command exit is carried in ExecExit and the RPC succeeds. Setup/transport/backend failures are RPC errors; stream EOF without an exit is not command success. Context cancellation/deadlines terminate the operation and release its resources. Plugins that launch children must ensure child cleanup; the SDK bootstrap does not implement an OS process-tree manager.
+Each side uses one send pump and one receive loop. Data chunks should be at most 32 KiB. Empty input is represented by CloseStdin with no preceding data frames. Stdout/stderr are separate byte streams, with no text decoding or PTY. The receiver drains output before exactly one terminal ExecExit. Command success requires `exit_code == 0` and an empty `signal`. A nonempty `signal` means command failure regardless of `exit_code`, including its protobuf default of zero. Ordinary nonzero or signal-terminated command exit is carried in ExecExit and the RPC succeeds. Setup/transport/backend failures are RPC errors; stream EOF without an exit is not command success. Context cancellation/deadlines terminate the operation and release its resources. Plugins that launch children must ensure child cleanup; server bootstrap and host-supervised process ownership are separate responsibilities.
 
 Logs uses merged binary OutputChunk frames. Output buffering must remain bounded. Do not call Send concurrently from stdout and stderr copiers.
 
@@ -47,7 +47,17 @@ Logs uses merged binary OutputChunk frames. Output buffering must remain bounded
 
 Use canonical gRPC status and attach RuntimeError details for stable categories, actionable messages, optional backend diagnostics, retryability, and structured context. Raw backend diagnostics must be redacted before display. Unknown detail fields remain forward-compatible; callers must not parse messages to classify errors.
 
-The plugin binary is trusted provider code. The host resolves it from checksum-verified `Agent.Binaries`, rather than PATH discovery, and runs it through the runtime supervisor. The magic cookie is not a security boundary.
+The plugin binary is trusted provider code. Devsy resolves the selected external runtime from its `Agent.Binaries` declaration and requires a SHA-256 checksum before launch, including cached and local absolute paths. The resolved executable must be a regular file; Unix hosts also check effective execute access. The runtime supervisor is the running Devsy executable's internal `runtime-supervisor` entry point, not another provider-distributed binary. The SDK transport runner does not download executables or establish checksum trust. A generic provider download or an `Agent.Binaries` path alone does not establish this trust, and the magic cookie is not authentication or sandboxing.
+
+## Plugin process environment
+
+Devsy inherits the agent host's environment, then appends resolved provider/workspace values. This external-driver path does not supply a separate extra-environment map. This is the environment of the trusted plugin and its runtime CLI children, separate from the guest environment carried in RunImage and ExecStart. The external driver preserves this behavior; it does not introduce an environment allowlist.
+
+`PATH` and home directories can select runtime CLIs and configuration. Proxy and CA settings, Docker configuration and credential helpers, and temporary-directory settings can affect the provider's image clients. Preserving those inputs does not prove every proxy topology, credential store or host profile works. The native consumer cases below cover their controlled registry/TLS/proxy/credential paths. Never log the full environment or secret-bearing runtime arguments; redact backend diagnostics before display.
+
+The host owns each supervised plugin session. The SDK server bootstrap does not itself own backend children; runtimes remain responsible for independently managed services and children outside the supervisor's process ownership. Cancellation does not promise rollback of backend effects that already committed.
+
+See the [rollout decision](./external-runtime-rollout.mdx) for the tested migration path, platform applicability and compatibility boundary.
 
 For SDK usage and development commands, see the [SDK README](https://github.com/devsy-org/devsy-runtime-sdk#readme).
 
