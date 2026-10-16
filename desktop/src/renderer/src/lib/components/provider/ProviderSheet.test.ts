@@ -1,4 +1,4 @@
-import { render } from "@testing-library/svelte"
+import { fireEvent, render, screen, waitFor } from "@testing-library/svelte"
 import { tick } from "svelte"
 import type { Readable, Writable } from "svelte/store"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -182,6 +182,138 @@ describe("ProviderSheet", () => {
     expect(providerOptions).toHaveBeenCalledTimes(1)
     expect(providerOptions).toHaveBeenCalledWith("ssh")
     unmount()
+  })
+
+  it("renders structured and legacy enums while saving exact option values", async () => {
+    providerOptions.mockResolvedValue({
+      SIZE: {
+        name: "SIZE",
+        default: "micro",
+        enum: [
+          { value: "micro", displayName: "Micro plan" },
+          { value: "large", displayName: "Large plan" },
+        ],
+      },
+      MODE: {
+        name: "MODE",
+        enum: ["steady", "burst"],
+      },
+    })
+    const { unmount } = render(ProviderSheet, {
+      props: { provider: makeProvider("ssh"), open: true },
+    })
+    await flushAsync()
+
+    expect(screen.getByText("Micro plan")).toBeDefined()
+    const sizeTrigger = screen.getByText("Micro plan").closest("button")
+    expect(sizeTrigger).not.toBeNull()
+    Object.defineProperty(sizeTrigger, "hasPointerCapture", {
+      value: () => false,
+    })
+    await fireEvent.pointerDown(sizeTrigger as HTMLButtonElement, {
+      button: 0,
+      pointerType: "mouse",
+    })
+    await fireEvent.pointerUp(
+      screen.getByRole("option", { name: "Large plan" }),
+      {
+        button: 0,
+        pointerType: "mouse",
+      },
+    )
+    const modeTrigger = screen.getByText("-- Select --").closest("button")
+    expect(modeTrigger).not.toBeNull()
+    Object.defineProperty(modeTrigger, "hasPointerCapture", {
+      value: () => false,
+    })
+    await fireEvent.pointerDown(modeTrigger as HTMLButtonElement, {
+      button: 0,
+      pointerType: "mouse",
+    })
+    await fireEvent.pointerUp(screen.getByRole("option", { name: "burst" }), {
+      button: 0,
+      pointerType: "mouse",
+    })
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() => {
+      expect(providerSetOptions).toHaveBeenCalledExactlyOnceWith("ssh", {
+        SIZE: "large",
+        MODE: "burst",
+      })
+    })
+    unmount()
+  })
+
+  it("saves an explicitly selected empty enum value from an unset option", async () => {
+    providerOptions.mockResolvedValue({
+      STORED_MODE: {
+        name: "STORED_MODE",
+        value: "",
+        enum: [
+          { value: "", displayName: "Stored empty" },
+          { value: "fast", displayName: "Fast" },
+        ],
+      },
+      DEFAULT_MODE: {
+        name: "DEFAULT_MODE",
+        default: "",
+        enum: [
+          { value: "", displayName: "Default empty" },
+          { value: "safe", displayName: "Safe" },
+        ],
+      },
+      UNSET_MODE: {
+        name: "UNSET_MODE",
+        enum: [
+          { value: "", displayName: "No extra settings" },
+          { value: "fast", displayName: "Fast" },
+        ],
+      },
+      UNTOUCHED_MODE: {
+        name: "UNTOUCHED_MODE",
+        enum: [
+          { value: "", displayName: "Also unset" },
+          { value: "safe", displayName: "Safe" },
+        ],
+      },
+    })
+    const { unmount } = render(ProviderSheet, {
+      props: { provider: makeProvider("ssh"), open: true },
+    })
+    try {
+      await flushAsync()
+
+      expect(screen.getByText("Stored empty")).toBeDefined()
+      expect(screen.getByText("Default empty")).toBeDefined()
+      const trigger = screen.getAllByText("-- Select --")[0].closest("button")
+      expect(trigger).not.toBeNull()
+      Object.defineProperty(trigger, "hasPointerCapture", {
+        value: () => false,
+      })
+      await fireEvent.pointerDown(trigger as HTMLButtonElement, {
+        button: 0,
+        pointerType: "mouse",
+      })
+      await fireEvent.pointerUp(
+        screen.getByRole("option", { name: "No extra settings" }),
+        { button: 0, pointerType: "mouse" },
+      )
+
+      const save = screen.getByRole("button", { name: "Save" })
+      expect(save.hasAttribute("disabled")).toBe(false)
+      await fireEvent.click(save)
+
+      await waitFor(() => {
+        expect(providerSetOptions).toHaveBeenCalledExactlyOnceWith("ssh", {
+          STORED_MODE: "",
+          DEFAULT_MODE: "",
+          UNSET_MODE: "",
+        })
+      })
+    } finally {
+      unmount()
+    }
   })
 
   it("shows deprecation guidance from the provider flag, not its name", async () => {
