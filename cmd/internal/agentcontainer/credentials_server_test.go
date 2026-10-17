@@ -114,33 +114,41 @@ func startFakeCredentialsServer(t *testing.T, owner string) int {
 	return port
 }
 
-func TestCredentialsServerCmd_Run_SameOwnerCollisionIsSilentNoOp(t *testing.T) {
+func TestCredentialsServerCmd_Run_SameOwnerWaitsWithoutWarning(t *testing.T) {
 	port := startFakeCredentialsServer(t, "alice")
 
-	var sink strings.Builder
-	log.Init(log.Config{Verbosity: 2, Format: "json"})
+	var sink recoveryLog
+	log.Init(log.Config{Verbosity: 2, Format: recoveryLogFormat})
 	remove := log.AddSink(&sink)
 	defer remove()
 
 	cmd := &CredentialsServerCmd{User: "alice"}
-	err := cmd.Run(context.Background(), port)
-	require.NoError(t, err, "losing to the same owner's session must not be an error")
+	session := startRecoveryCommand(t, cmd, port)
+	require.Eventually(t, func() bool {
+		return strings.Contains(sink.String(), "another session already provides")
+	}, time.Second, time.Millisecond)
+	session.cancel()
+	require.NoError(t, <-session.done)
 	_ = log.Sync()
 
 	assert.NotContains(t, sink.String(), "\"level\":\"warn\"", "same-owner collision must not warn")
 }
 
-func TestCredentialsServerCmd_Run_DifferentOwnerCollisionWarnsButDoesNotError(t *testing.T) {
+func TestCredentialsServerCmd_Run_DifferentOwnerWaitsAndWarns(t *testing.T) {
 	port := startFakeCredentialsServer(t, "alice")
 
-	var sink strings.Builder
-	log.Init(log.Config{Verbosity: 2, Format: "json"})
+	var sink recoveryLog
+	log.Init(log.Config{Verbosity: 2, Format: recoveryLogFormat})
 	remove := log.AddSink(&sink)
 	defer remove()
 
 	cmd := &CredentialsServerCmd{User: "root"}
-	err := cmd.Run(context.Background(), port)
-	require.NoError(t, err, "losing the race must still not fail the session")
+	session := startRecoveryCommand(t, cmd, port)
+	require.Eventually(t, func() bool {
+		return strings.Contains(sink.String(), "already owned by user")
+	}, time.Second, time.Millisecond)
+	session.cancel()
+	require.NoError(t, <-session.done)
 	_ = log.Sync()
 
 	logged := sink.String()

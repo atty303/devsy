@@ -224,15 +224,14 @@ func runServicesIteration(
 		Stdout:  stdoutWriter,
 		Stderr:  writer,
 	})
+	// Stop the local server when the remote command exits; our pipe writer
+	// is still open, so waiting for EOF would not finish.
+	cancel()
+	serverErr := <-errChan
 	if err != nil {
-		// Drain errChan to allow goroutine to exit cleanly
-		select {
-		case <-errChan:
-		default:
-		}
 		return err
 	}
-	return <-errChan
+	return serverErr
 }
 
 // RunServices forwards the ports for a given workspace and uses its SSH client
