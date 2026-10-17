@@ -1,0 +1,186 @@
+name: Fork CLI Release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fork-cli-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'atty303/devsy' && github.ref == 'refs/heads/fork-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+      upstream_sha: ${{ steps.prepare.outputs.upstream_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - run: go test ./hack/fork_release
+      - id: prepare
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: go run ./hack/fork_release prepare --out "$RUNNER_TEMP/assembly" --run-url "$RUN_URL"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: fork-assembly
+          path: |
+            ${{ runner.temp }}/assembly/source.bundle
+            ${{ runner.temp }}/assembly/build-info.json
+            ${{ runner.temp }}/assembly/resolved-inputs.json
+            ${{ runner.temp }}/assembly/input-config.json
+            ${{ runner.temp }}/assembly/operations.jsonl
+          retention-days: 7
+  verify-build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-assembly
+          path: ${{ runner.temp }}/assembly
+      - shell: bash
+        run: git clone "$RUNNER_TEMP/assembly/source.bundle" "$RUNNER_TEMP/source"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: ${{ runner.temp }}/source/go.mod
+      - name: Unit tests
+        shell: bash
+        working-directory: ${{ runner.temp }}/source
+        run: |
+          set -euo pipefail
+          packages="$(go run ./hack/unit_test_packages)"
+          test -n "$packages"
+          printf '%s\n' "$packages" | xargs go test -race -short
+          go test -race -count=1 ./e2e/framework/runenv/... ./e2e/framework/dockerwsl ./e2e/cmd/devsy-ci
+      - name: CLI lint (upstream CI policy)
+        if: runner.os == 'Linux'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.13.2
+          working-directory: ${{ runner.temp }}/source
+          args: --new-from-rev=${{ needs.prepare.outputs.upstream_sha }}
+      - name: Build matched CLI and agent
+        run: go run ./hack/fork_release build --source "$RUNNER_TEMP/source" --info "$RUNNER_TEMP/assembly/build-info.json" --out "$RUNNER_TEMP/binaries"
+      - name: Native binary version
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in Linux) os=linux ;; macOS) os=darwin ;; esac
+          case "$RUNNER_ARCH" in X64) arch=amd64 ;; ARM64) arch=arm64 ;; esac
+          "$RUNNER_TEMP/binaries/devsy-$os-$arch" --version | grep -F "$VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: binaries-${{ runner.os }}
+          path: ${{ runner.temp }}/binaries/
+          retention-days: 7
+  e2e:
+    needs: [prepare, verify-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-assembly
+          path: ${{ runner.temp }}/assembly
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: binaries-Linux
+          path: ${{ runner.temp }}/binaries
+      - run: git clone "$RUNNER_TEMP/assembly/source.bundle" "$RUNNER_TEMP/source"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: ${{ runner.temp }}/source/go.mod
+      - name: Selected PR end-to-end tests
+        shell: bash
+        working-directory: ${{ runner.temp }}/source
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP/binaries/devsy-linux-amd64"
+          while IFS= read -r check; do
+            case "$check" in
+              credential-relay)
+                DEVSY_AGENT_PREFER_DOWNLOAD=false RELAY_AGENT_BINARY="$RUNNER_TEMP/binaries/devsy-linux-amd64" \
+                  bash hack/ci/credential-relay.sh "$RUNNER_TEMP/binaries/devsy-linux-amd64"
+                ;;
+              gh-relay)
+                go test -tags=ghrelay ./pkg/ghcredentials -run '^TestRealGitHubCLI$' -v -count=1 -timeout=10m
+                ;;
+              *) echo "Unknown required check: $check" >&2; exit 1 ;;
+            esac
+          done < <(jq -r '.checks[]' "$RUNNER_TEMP/assembly/build-info.json")
+  publish:
+    needs: [prepare, verify-build, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: binaries-*
+          path: ${{ runner.temp }}/downloads
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-assembly
+          path: ${{ runner.temp }}/assembly
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: atty303/devsy
+        run: go run ./hack/fork_release publish --out "$RUNNER_TEMP/release" --source "$RUNNER_TEMP/assembly" --info "$RUNNER_TEMP/downloads"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: fork-publication
+          path: |
+            ${{ runner.temp }}/release/operations.jsonl
+            ${{ runner.temp }}/release/build-info.json
+            ${{ runner.temp }}/release/checksums.txt
+          retention-days: 7
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          install: false
+      - name: Verify mise latest from published release
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          MISE_DATA_DIR: ${{ runner.temp }}/mise-data
+          MISE_CACHE_DIR: ${{ runner.temp }}/mise-cache
+          MISE_CONFIG_DIR: ${{ runner.temp }}/mise-config
+          MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/mise-global.toml
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          actual="$(mise latest github:atty303/devsy)"
+          test "${actual#v}" = "${VERSION#v}"
+          mise exec github:atty303/devsy@latest -- devsy --version | grep -F "$VERSION"

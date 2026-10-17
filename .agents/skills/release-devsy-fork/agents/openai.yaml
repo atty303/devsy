@@ -1,0 +1,4 @@
+interface:
+  display_name: "Devsy Fork Release"
+  short_description: "Integrate selected Devsy PRs, publish a fork release, and verify mise consumption."
+  default_prompt: "Use $release-devsy-fork to update the selected Devsy branches, run the fork release workflow, and verify the result."

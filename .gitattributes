@@ -1,0 +1,2 @@
+# Unified diff context preserves the source's indentation and blank lines.
+hack/fork_release/patches/*.patch -whitespace

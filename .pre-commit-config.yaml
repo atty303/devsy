@@ -3,6 +3,7 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: '^hack/fork_release/patches/.*\.patch$'
       - id: end-of-file-fixer
       - id: check-yaml
         args: ["--allow-multiple-documents"]

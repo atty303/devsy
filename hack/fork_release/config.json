@@ -1,0 +1,17 @@
+{
+  "upstream": "devsy-org/devsy",
+  "upstream_branch": "main",
+  "branches": [
+    {
+      "repository": "atty303/devsy",
+      "branch": "fix/credential-relay-remote-wait",
+      "checks": ["credential-relay"]
+    },
+    {
+      "repository": "atty303/devsy",
+      "branch": "atty303/gh-relay",
+      "checks": ["gh-relay"]
+    }
+  ],
+  "patches": ["hack/fork_release/patches/agent-source.patch"]
+}

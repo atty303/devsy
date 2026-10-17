@@ -1,0 +1,50 @@
+--- a/pkg/config/repo.go
++++ b/pkg/config/repo.go
+@@ -41,6 +41,9 @@
+ 	AgentLatestDownloadURL = GitHubReleasesURL + "/latest/download"
+ )
+ 
++// Set only by the fork release build; explicit environment and context options retain precedence.
++var forkAgentDownloadBaseURL string
++
+ // DefaultAgentDownloadURL returns the URL the host should download the agent
+ // binary from. Honors the DEVSY_AGENT_URL override; otherwise uses the
+ // version-pinned release URL, falling back to "latest" in dev builds.
+@@ -51,5 +54,8 @@
+ 	if version.GetVersion() == version.DevVersion {
+ 		return AgentLatestDownloadURL
+ 	}
++	if forkAgentDownloadBaseURL != "" {
++		return strings.TrimRight(forkAgentDownloadBaseURL, "/") + "/" + version.GetVersion()
++	}
+ 	return AgentDownloadBaseURL + version.GetVersion()
+ }
+--- /dev/null
++++ b/pkg/config/fork_release_test.go
+@@ -0,0 +1,26 @@
++package config
++
++import (
++	"testing"
++
++	"github.com/devsy-org/devsy/pkg/version"
++	"github.com/stretchr/testify/require"
++)
++
++func TestForkReleaseAgentDefault(t *testing.T) {
++	previousBase, previousDev := forkAgentDownloadBaseURL, version.DevVersion
++	t.Cleanup(func() {
++		forkAgentDownloadBaseURL, version.DevVersion = previousBase, previousDev
++	})
++	version.DevVersion = "test-development-version"
++	forkAgentDownloadBaseURL = "https://github.com/atty303/devsy/releases/download/"
++	t.Setenv(EnvAgentURL, "")
++	require.Equal(t, forkAgentDownloadBaseURL+version.GetVersion(), DefaultAgentDownloadURL())
++	t.Setenv(EnvAgentURL, "https://example.invalid/custom///")
++	require.Equal(t, "https://example.invalid/custom", DefaultAgentDownloadURL())
++	t.Setenv(EnvAgentURL, "")
++	forkAgentDownloadBaseURL = ""
++	require.Equal(t, AgentDownloadBaseURL+version.GetVersion(), DefaultAgentDownloadURL())
++	version.DevVersion = version.GetVersion()
++	require.Equal(t, AgentLatestDownloadURL, DefaultAgentDownloadURL())
++}
