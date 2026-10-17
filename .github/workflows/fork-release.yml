@@ -1,6 +1,11 @@
 name: Fork CLI Release
 on:
   workflow_dispatch:
+    inputs:
+      verify_version:
+        description: Verify an already published latest version without rebuilding or publishing
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -8,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prepare:
-    if: github.repository == 'atty303/devsy' && github.ref == 'refs/heads/fork-release'
+    if: github.repository == 'atty303/devsy' && github.ref == 'refs/heads/fork-release' && inputs.verify_version == ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -191,14 +196,23 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          MISE_DATA_DIR: ${{ runner.temp }}/mise-data
-          MISE_CACHE_DIR: ${{ runner.temp }}/mise-cache
-          MISE_CONFIG_DIR: ${{ runner.temp }}/mise-config
-          MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/mise-global.toml
           MISE_GITHUB_TOKEN: ${{ github.token }}
-        working-directory: ${{ runner.temp }}
-        run: |
-          set -euo pipefail
-          actual="$(mise latest github:atty303/devsy)"
-          test "${actual#v}" = "${VERSION#v}"
-          mise exec github:atty303/devsy@latest -- devsy --version | grep -F "$VERSION"
+          GH_TOKEN: ${{ github.token }}
+        run: bash hack/fork_release/verify-mise.sh
+  verify-published:
+    if: github.repository == 'atty303/devsy' && github.ref == 'refs/heads/fork-release' && inputs.verify_version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          install: false
+      - name: Verify published latest without publishing
+        env:
+          VERSION: ${{ inputs.verify_version }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash hack/fork_release/verify-mise.sh

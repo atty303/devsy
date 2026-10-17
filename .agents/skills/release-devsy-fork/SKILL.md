@@ -29,7 +29,7 @@ For a requested release, run `gh workflow run fork-release.yml --repo atty303/de
 
 Inspect the assembly's `build-info.json` and operation records. Require the pinned upstream/selected SHAs and patch hashes, the intended check selection, successful Linux/macOS unit gates, CLI CI lint, selected E2Es and all four builds. Check a `Required check passed: <name>` marker for every entry in the manifest's `checks`, rather than relying only on the E2E job status. Missing, skipped or failed required jobs/checks are not successful validation. Never remove a gate or skip a failing test to publish; diagnose the failure and fix its owning source within the authorized scope.
 
-The workflow serializes releases, reserves a new `v0.0.0-atty.N` tag, uploads all assets to a draft, and only then publishes a regular latest release. A failed run can leave a reserved tag or draft. Inspect it, preserve it, and rerun with a new version; do not overwrite or delete published assets/tags or reuse a reserved version. If publication succeeded but mise verification failed, report and diagnose that boundary before considering another release.
+The workflow serializes releases, reserves a new `v0.0.0-atty.N` tag, uploads all assets to a draft, and only then publishes a regular latest release. A failed run can leave a reserved tag or draft. Inspect it, preserve it, and rerun with a new version; do not overwrite or delete published assets/tags or reuse a reserved version. If publication succeeded while a required check or mise verification remains unconfirmed, report and diagnose that boundary before considering another release. `v0.0.0-atty.1` lacks pre-publication GH relay E2E evidence; exclude it from verified rollback candidates.
 
 ## Resolve an integration conflict
 
@@ -42,6 +42,8 @@ Replay the patch and relevant tests, review the management change, push it, and 
 ## Verify consumption
 
 Confirm the final release is public, non-draft, non-prerelease and GitHub's latest release. Verify its tag SHA, four binary asset names, checksums and `build-info.json` against the completed run. Use isolated mise config/data/cache directories outside the repository to check `mise latest github:atty303/devsy` and execute `devsy --version` from that version. Do not modify the user's global installation or another repository's settings.
+
+Immediate verification sets `MISE_MINIMUM_RELEASE_AGE=0s` only in the disposable environment because mise normally hides releases younger than 24 hours. Report this condition; consumer settings remain user-owned. If publication succeeded but this post-publication verification failed, rerun only verification with `gh workflow run fork-release.yml --repo atty303/devsy --ref fork-release -f verify_version=<published-version>`. Follow the exact resulting run and require its `verify-published` job to succeed. This mode neither assembles nor publishes a release; do not claim its skipped build/E2E jobs provide new validation. Retain the original release run as their evidence.
 
 The binary's default agent URL points to the same fork release. Explicit `DEVSY_AGENT_URL` and context `AGENT_URL` retain precedence; check their presence/source without disclosing credentials. If an override points to an older release, explain the mismatch and only change consumer configuration when requested. Do not claim a real provider workspace was exercised from source tests or isolated mise consumption.
 
