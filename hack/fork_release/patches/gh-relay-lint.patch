@@ -1,0 +1,91 @@
+diff --git a/pkg/ghcredentials/host.go b/pkg/ghcredentials/host.go
+index 223c9444a..a96fc5860 100644
+--- a/pkg/ghcredentials/host.go
++++ b/pkg/ghcredentials/host.go
+@@ -77,11 +77,6 @@ func collectHostAccounts(ctx context.Context, binary string, hosts *yaml.Node) H
+ 	return result
+ }
+ 
+-func tokenForHost(ctx context.Context, binary, host string, env []string) string {
+-	token, _ := resolveToken(ctx, binary, host, env)
+-	return token
+-}
+-
+ func resolveToken(ctx context.Context, binary, host string, env []string) (string, error) {
+ 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+ 	defer cancel()
+diff --git a/pkg/ghcredentials/session_test.go b/pkg/ghcredentials/session_test.go
+index ad11152e2..0ec21253f 100644
+--- a/pkg/ghcredentials/session_test.go
++++ b/pkg/ghcredentials/session_test.go
+@@ -10,7 +10,12 @@ import (
+ 	"github.com/stretchr/testify/require"
+ )
+ 
+-const testPathEnv = "PATH=/usr/bin:/bin"
++const (
++	testHost           = "github.example"
++	testUser           = "relay-user"
++	testPathEnv        = "PATH=/usr/bin:/bin"
++	testForwardedToken = "dummy-forwarded-value"
++)
+ 
+ func writeTestFile(t *testing.T, path, content string) {
+ 	t.Helper()
+@@ -76,7 +81,7 @@ func TestSessionConcurrentInvocationsAndRecovery(t *testing.T) {
+ }
+ 
+ func TestStripForwardedCredentialsAndPreserveLocalLogin(t *testing.T) {
+-	a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
++	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
+ 	s := &session{Accounts: []Account{a}}
+ 	for _, tc := range []struct {
+ 		name, input    string
+@@ -170,9 +175,9 @@ func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
+ 	for _, tc := range []struct {
+ 		user, tokenField, userBody string
+ 	}{
+-		{"relay-user", "", "{}"},
++		{testUser, "", "{}"},
+ 		{"dotfiles-user", "", ""},
+-		{"relay-user", "  oauth_token: \"\"\n", "\n      oauth_token: \"\""},
++		{testUser, "  oauth_token: \"\"\n", "\n      oauth_token: \"\""},
+ 		{"dotfiles-user", "  oauth_token:\n", "\n      oauth_token:"},
+ 	} {
+ 		t.Run(tc.user+tc.tokenField, func(t *testing.T) {
+@@ -183,7 +188,7 @@ func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
+ 			before := "github.example:\n  git_protocol: https\n  user: " + tc.user + "\n" + tc.tokenField +
+ 				"  users:\n    " + tc.user + ": " + tc.userBody + "\n    other-user:\n"
+ 			writeTestFile(t, filepath.Join(original, hostsFile), before)
+-			a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
++			a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
+ 			s, err := startSession(context.Background(), original, []Account{a})
+ 			require.NoError(t, err)
+ 			t.Cleanup(func() { _ = s.lock.Close() })
+@@ -224,7 +229,7 @@ exit 1
+ 	// resolveToken passes "auth" as the first argument, so sh reads this fixture.
+ 	t.Chdir(root)
+ 	s, err := startSession(context.Background(), original, []Account{
+-		{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"},
++		{Host: testHost, User: testUser, Token: testForwardedToken},
+ 	})
+ 	require.NoError(t, err)
+ 	t.Cleanup(func() { _ = s.lock.Close() })
+@@ -249,7 +254,7 @@ func TestForwardedLogoutRestoresHiddenPreferences(t *testing.T) {
+ 	)
+ 	s := &session{
+ 		Accounts: []Account{
+-			{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"},
++			{Host: testHost, User: testUser, Token: testForwardedToken},
+ 		},
+ 	}
+ 	after, err := s.strip(before, []byte("{}\n"))
+@@ -264,7 +269,7 @@ func TestForwardedLogoutRestoresHiddenPreferences(t *testing.T) {
+ func TestTokenLookupTimeoutDoesNotAllowForwarding(t *testing.T) {
+ 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+ 	defer cancel()
+-	a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
++	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
+ 	hosts := mapping()
+ 	decision := a.inject(ctx, "/usr/bin/false", []string{testPathEnv}, hosts)
+ 	require.Equal(t, "local_lookup_failed", decision.Source)

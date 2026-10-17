@@ -21,6 +21,7 @@
   "patches": [
     "hack/fork_release/patches/agent-source.patch",
     "hack/fork_release/patches/test-fixtures.patch",
-    "hack/fork_release/patches/credential-helpers.patch"
+    "hack/fork_release/patches/credential-helpers.patch",
+    "hack/fork_release/patches/gh-relay-lint.patch"
   ]
 }
