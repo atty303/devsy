@@ -33,7 +33,7 @@ Reconcile the tool schemas against `cmd/mcp`, and the CLI syntax in the skill ag
 
 ## Validation helper
 
-`validate-agent-skill.sh` runs the upstream Agent Skills `skills-ref validate` command for format and naming, and installs the skill with the Vercel `skills` CLI to exercise discovery. It also checks that the reference files exist and that installed copies match the source. `skills` is pinned by package version and `skills-ref` by source commit.
+`validate_agent_skill` (run as `go run ./hack/validate_agent_skill`) runs the upstream Agent Skills `skills-ref validate` command for format and naming, and installs the skill with the Vercel `skills` CLI to exercise discovery. It also checks that the reference files exist and that installed copies match the source. `skills` is pinned by package version and `skills-ref` by source commit.
 
 Requirements: Node.js 22.20+, Python 3.11+ (set `PYTHON` if the default is older), and network access to fetch dependencies. The helper uses temporary virtualenv and install directories that it removes on exit, and disables installer telemetry. CI runs it without provider infrastructure.
 
