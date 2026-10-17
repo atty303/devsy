@@ -5,9 +5,15 @@ import "gopkg.in/yaml.v3"
 // Categories are a fixed allowlist: extension paths, aliases, account names,
 // arbitrary configuration keys and values must never enter diagnostics.
 type writebackSummary struct {
+	Restorations   []hostRestoration      `json:"restorations,omitempty"`
 	UnchangedFiles int                    `json:"unchanged_files"`
 	WrittenFiles   int                    `json:"written_files"`
 	Changes        map[string]changeCount `json:"changes,omitempty"`
+}
+
+type hostRestoration struct {
+	Host    string `json:"host"`
+	Outcome string `json:"outcome"`
 }
 
 func (s *writebackSummary) unchanged() {

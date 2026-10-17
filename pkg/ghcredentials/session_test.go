@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+const testPathEnv = "PATH=/usr/bin:/bin"
 
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
@@ -96,7 +99,7 @@ func TestStripForwardedCredentialsAndPreserveLocalLogin(t *testing.T) {
 		{"keyring login", "github.example:\n  user: relay-user\n  users:\n    relay-user: {}\n", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := s.strip([]byte(tc.input))
+			got, err := s.strip(nil, []byte(tc.input))
 			require.NoError(t, err)
 			// Do not include the produced configuration in assertion failures.
 			n, err := decode(got)
@@ -161,4 +164,110 @@ func TestDisabledWritebackDiagnosticsDoNotParseConfiguration(t *testing.T) {
 	var summary *writebackSummary
 	// Invalid YAML would fail diagnostic parsing if the disabled sink were entered.
 	require.NoError(t, summary.inspect(configFile, []byte("["), []byte("["), []byte("[")))
+}
+
+func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
+	for _, tc := range []struct {
+		user, tokenField, userBody string
+	}{
+		{"relay-user", "", "{}"},
+		{"dotfiles-user", "", ""},
+		{"relay-user", "  oauth_token: \"\"\n", "\n      oauth_token: \"\""},
+		{"dotfiles-user", "  oauth_token:\n", "\n      oauth_token:"},
+	} {
+		t.Run(tc.user+tc.tokenField, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", root)
+			t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+			original := filepath.Join(root, "gh")
+			before := "github.example:\n  git_protocol: https\n  user: " + tc.user + "\n" + tc.tokenField +
+				"  users:\n    " + tc.user + ": " + tc.userBody + "\n    other-user:\n"
+			writeTestFile(t, filepath.Join(original, hostsFile), before)
+			a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
+			s, err := startSession(context.Background(), original, []Account{a})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.lock.Close() })
+			env := []string{"HOME=" + root, "GH_CONFIG_DIR=" + original, testPathEnv}
+			require.NoError(t, s.inject(context.Background(), "/usr/bin/false", env))
+			require.Equal(t, "forwarded", s.decisions[0].Source)
+			require.True(t, s.decisions[0].Preferences)
+			require.Equal(t, tc.user == a.User, s.decisions[0].SameUser)
+			data, err := readFile(filepath.Join(s.work(), hostsFile))
+			require.NoError(t, err)
+			n, err := decode(data)
+			require.NoError(t, err)
+			h := get(n, a.Host)
+			require.Equal(t, a.User, get(h, "user").Value)
+			require.Len(t, get(h, "users").Content, 2)
+			require.NoError(t, s.finish(context.Background()))
+			got, err := readFile(filepath.Join(original, hostsFile))
+			require.NoError(t, err)
+			// Never print credential-bearing configuration on assertion failure.
+			require.True(t, string(got) == before, "tokenless dotfiles registration changed")
+		})
+	}
+}
+
+func TestAuthenticationProbeCannotMigrateOriginalSettings(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	original := filepath.Join(root, "gh")
+	before := "github.example:\n  user: dotfiles-user\n  users:\n    dotfiles-user: {}\n"
+	writeTestFile(t, filepath.Join(original, hostsFile), before)
+	probe := filepath.Join(root, "auth")
+	writeTestFile(t, probe, `#!/bin/sh
+printf '{}\n' > "$GH_CONFIG_DIR/hosts.yml"
+printf 'version: "1"\n' > "$GH_CONFIG_DIR/config.yml"
+exit 1
+`)
+	// resolveToken passes "auth" as the first argument, so sh reads this fixture.
+	t.Chdir(root)
+	s, err := startSession(context.Background(), original, []Account{
+		{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.lock.Close() })
+	env := []string{"HOME=" + root, "GH_CONFIG_DIR=" + original, testPathEnv}
+	require.NoError(t, s.inject(context.Background(), "/bin/sh", env))
+	for _, path := range []string{filepath.Join(original, hostsFile), filepath.Join(s.dir, "before", hostsFile)} {
+		got, err := readFile(path)
+		require.NoError(t, err)
+		require.True(t, string(got) == before, "authentication probe modified original or baseline")
+	}
+	require.NoFileExists(t, filepath.Join(original, configFile))
+	require.NoFileExists(t, filepath.Join(s.work(), configFile))
+	require.NoError(t, s.finish(context.Background()))
+	got, err := readFile(filepath.Join(original, hostsFile))
+	require.NoError(t, err)
+	require.True(t, string(got) == before, "probe migration was written back")
+}
+
+func TestForwardedLogoutRestoresHiddenPreferences(t *testing.T) {
+	before := []byte(
+		"github.example:\n  user: dotfiles-user\n  git_protocol: ssh\n  users:\n    dotfiles-user: {}\n",
+	)
+	s := &session{
+		Accounts: []Account{
+			{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"},
+		},
+	}
+	after, err := s.strip(before, []byte("{}\n"))
+	require.NoError(t, err)
+	original, err := decode(before)
+	require.NoError(t, err)
+	result, err := decode(after)
+	require.NoError(t, err)
+	require.True(t, equal(original, result), "forwarded logout removed hidden preferences")
+}
+
+func TestTokenLookupTimeoutDoesNotAllowForwarding(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
+	hosts := mapping()
+	decision := a.inject(ctx, "/usr/bin/false", []string{testPathEnv}, hosts)
+	require.Equal(t, "local_lookup_failed", decision.Source)
+	require.Equal(t, "timeout", decision.Probe)
+	require.Nil(t, get(hosts, a.Host))
 }

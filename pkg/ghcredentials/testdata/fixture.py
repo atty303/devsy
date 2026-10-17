@@ -32,6 +32,9 @@ def server():
                 self.rfile.read(int(self.headers.get('Content-Length', 0)))
             token = self.headers.get('Authorization', '').split(' ')[-1]
             user = tokens.get(token)
+            if user == 'local-user' and (ROOT / 'revoke-local').exists():
+                user = None
+            forbidden = user == 'local-user' and (ROOT / 'forbid-local').exists() and self.path.startswith(('/repos/', '/api/v3/repos/'))
             body = {'login': user, 'id': 123, 'data': {'viewer': {'login': user}}} if user else {'message': 'Bad credentials'}
             if self.path == '/login/device/code':
                 user = 'host-user'
@@ -40,7 +43,7 @@ def server():
                 user = 'host-user'
                 body = {'access_token': secrets[HOSTS[0]]['refresh'], 'token_type': 'bearer', 'scope': 'repo,read:org,gist'}
             data = json.dumps(body).encode()
-            self.send_response(200 if user else 401)
+            self.send_response(403 if forbidden else 200 if user else 401)
             self.send_header('X-OAuth-Scopes', 'repo, read:org, gist')
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(data)))
@@ -103,6 +106,52 @@ def check():
         return json.loads(max(folder.glob('*.json'), key=lambda f: f.stat().st_mtime_ns).read_text())
 
 
+    # Dotfiles contain account preferences, never authentication.
+    registrations = (
+        'github.com:\n    git_protocol: https\n    user: local-user\n    users:\n        local-user:\n'
+        'enterprise.one.test:\n    git_protocol: https\n    user: host-user\n    oauth_token: \"\"\n    users:\n        host-user:\n            oauth_token: \"\"\n'
+        'enterprise.two.test:\n    git_protocol: https\n    user: dotfiles-user\n    oauth_token:\n    users:\n        dotfiles-user:\n            oauth_token:\n        other-user:\n'
+    )
+    (original / 'hosts.yml').write_text(registrations)
+    verify('tokenless registrations use host active accounts', all(api(h) for h in HOSTS))
+    verify('real auth status ignores hidden tokenless registrations', gh('auth', 'status').returncode == 0)
+    verify('unchanged invocation preserves exact dotfiles registrations', saved() == registrations and no_forwarded_saved())
+    decisions = last_diagnostic()['hosts']
+    verify('registration forwarding retained in diagnostics', decisions and all(h['source'] == 'forwarded' and h.get('account_preferences') and h.get('token_probe') for h in decisions) and decisions[1].get('same_user') and not decisions[2].get('same_user'))
+    verify('registration restoration retained in diagnostics', all(r['outcome'] == 'preferences_restored' for r in last_diagnostic()['writeback']['restorations']))
+    r = gh('auth', 'logout', '--hostname', HOSTS[2], '--user', 'host-user')
+    verify('forwarded logout preserves hidden dotfiles host', r.returncode == 0 and saved() == registrations and api(HOSTS[2]))
+    r = gh('config', 'set', 'git_protocol', 'https', '--host', HOSTS[2])
+    verify('host setting resave preserves registrations and user preference', r.returncode == 0 and saved() == registrations + '        host-user:\n            git_protocol: https\n')
+    verify('forwarding preserves saved per-account settings', gh('config', 'get', 'git_protocol', '--host', HOSTS[2]).stdout.strip() == 'https')
+    r = gh('auth', 'login', '--hostname', HOSTS[0], '--with-token', '--insecure-storage', token=secrets[HOSTS[0]]['local'])
+    verify('local login from tokenless preferences persists', r.returncode == 0 and api(HOSTS[0], 'local-user') and no_forwarded_saved())
+    r = gh('auth', 'logout', '--hostname', HOSTS[0], '--user', 'local-user')
+    verify('local logout from preferences restores forwarding', r.returncode == 0 and api(HOSTS[0]))
+    (original / 'hosts.yml').write_text(registrations)
+    ready_meta, release_meta = ROOT / 'metadata-ready', ROOT / 'metadata-release'
+    verify('metadata mutation alias saves', gh('alias', 'set', 'metadata-pending', '!gh config set git_protocol ssh --host enterprise.two.test; touch "$GH_TEST_READY"; while test ! -f "$GH_TEST_RELEASE"; do sleep 0.05; done').returncode == 0)
+    e = dict(os.environ, GH_TEST_READY=str(ready_meta), GH_TEST_RELEASE=str(release_meta))
+    p = subprocess.Popen(['/bin/bash', '-lc', 'exec gh metadata-pending'], env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        for _ in range(200):
+            if ready_meta.exists():
+                break
+            time.sleep(0.05)
+        verify('tokenless metadata invocation reached mutation', ready_meta.exists())
+        changed = registrations.replace('user: dotfiles-user', 'user: parallel-user') + 'unrelated.test:\n    git_protocol: ssh\n'
+        (original / 'hosts.yml').write_text(changed)
+        release_meta.touch()
+        p.communicate(timeout=20)
+        verify('host-setting delta preserves parallel user and host changes', p.returncode == 0 and 'user: parallel-user' in saved() and 'unrelated.test:\n    git_protocol: ssh' in saved() and no_forwarded_saved())
+        verify('host-setting delta persists at host and account positions', 'enterprise.two.test:\n    git_protocol: ssh' in saved() and '        host-user:\n            git_protocol: ssh' in saved())
+    finally:
+        if p.poll() is None:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.communicate()
+    verify('metadata alias removed', gh('alias', 'delete', 'metadata-pending').returncode == 0)
+    (original / 'hosts.yml').unlink()
+
     verify('all hosts forwarded through real RPC and HTTP relay', all(api(h) for h in HOSTS))
     verify('real auth status', gh('auth', 'status').returncode == 0)
     verify('forwarding never saved', no_forwarded_saved())
@@ -129,6 +178,22 @@ def check():
 
     r = gh('auth', 'login', '--hostname', HOSTS[1], '--with-token', token=secrets[HOSTS[1]]['local'])
     verify('keyring login succeeds without plaintext token', r.returncode == 0 and secrets[HOSTS[1]]['local'] not in saved() and api(HOSTS[1], 'local-user'))
+    verify('existing keyring credential excluded from forwarding', last_diagnostic()['hosts'][1]['source'] == 'keyring')
+    verify('unavailable keyring backend follows gh no-token result', api(HOSTS[1], env={'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/nonexistent'}) and last_diagnostic()['hosts'][1]['source'] == 'forwarded')
+    verify('unavailable backend leaves local keyring intact', api(HOSTS[1], 'local-user'))
+    revoked = ROOT / 'revoke-local'
+    revoked.touch()
+    try:
+        verify('expired keyring credential never falls back', not api(HOSTS[1]) and last_diagnostic()['hosts'][1]['source'] == 'keyring')
+    finally:
+        revoked.unlink()
+    forbidden = ROOT / 'forbid-local'
+    forbidden.touch()
+    try:
+        r = gh('api', 'repos/fixture/private', '--hostname', HOSTS[1])
+        verify('insufficient keyring permission never falls back', r.returncode != 0 and '403' in r.stderr and last_diagnostic()['hosts'][1]['source'] == 'keyring')
+    finally:
+        forbidden.unlink()
     r = gh('auth', 'status', '--hostname', HOSTS[1])
     verify('real auth status identifies keyring', r.returncode == 0 and 'keyring' in r.stdout + r.stderr)
     verify('keyring logout restores forwarding', gh('auth', 'logout', '--hostname', HOSTS[1], '--user', 'local-user').returncode == 0 and api(HOSTS[1]))

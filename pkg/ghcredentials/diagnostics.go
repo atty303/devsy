@@ -11,8 +11,11 @@ import (
 )
 
 type hostDecision struct {
-	Host   string `json:"host"`
-	Source string `json:"source"`
+	Host        string `json:"host"`
+	Source      string `json:"source"`
+	Preferences bool   `json:"account_preferences,omitempty"`
+	SameUser    bool   `json:"same_user,omitempty"`
+	Probe       string `json:"token_probe,omitempty"`
 }
 
 // Only these source-allowlisted fields may enter local diagnostics. Command

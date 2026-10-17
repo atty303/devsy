@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -247,13 +248,10 @@ func localAuthSource(n *yaml.Node) string {
 	users := get(n, "users")
 	if users != nil {
 		for i := 1; i < len(users.Content); i += 2 {
-			if get(users.Content[i], "oauth_token") != nil {
+			if token := get(users.Content[i], "oauth_token"); token != nil && token.Value != "" {
 				return "local_config"
 			}
 		}
-	}
-	if user := get(n, "user"); user != nil && user.Value != "" {
-		return "local_registration"
 	}
 	return ""
 }
@@ -279,19 +277,13 @@ func (s *session) inject(ctx context.Context, binary string, env []string) error
 	if err != nil {
 		return boundary("config.decode", err)
 	}
-	var injected []Account
-	for _, a := range s.Accounts {
-		source := a.inject(ctx, binary, env, hosts)
-		s.decisions = append(s.decisions, hostDecision{Host: a.Host, Source: source})
-		if source == "forwarded" {
-			injected = append(injected, a)
-		}
+	if err := s.overlay(ctx, binary, env, hosts); err != nil {
+		return err
 	}
-	s.Accounts = injected
 	if err := s.save(); err != nil {
 		return err
 	}
-	if len(injected) == 0 {
+	if len(s.Accounts) == 0 {
 		return nil
 	}
 	b, err = yaml.Marshal(hosts)
@@ -301,13 +293,71 @@ func (s *session) inject(ctx context.Context, binary string, env []string) error
 	return os.WriteFile(path, b, 0o600)
 }
 
-func (s *session) strip(data []byte) ([]byte, error) {
+// Even gh auth token can migrate configuration. Never point the lookup at
+// original settings or the immutable writeback baseline. Each host gets a fresh
+// copy because a migration may change registrations for other hosts as well.
+func (s *session) overlay(
+	ctx context.Context,
+	binary string,
+	env []string,
+	hosts *yaml.Node,
+) error {
+	var injected []Account
+	for _, a := range s.Accounts {
+		probe, err := s.probeConfig()
+		if err != nil {
+			return boundary("config.probe_snapshot", err)
+		}
+		decision := a.inject(ctx, binary, replaceEnv(env, "GH_CONFIG_DIR", probe), hosts)
+		_ = os.RemoveAll(probe)
+		s.decisions = append(s.decisions, decision)
+		if decision.Source == "forwarded" {
+			injected = append(injected, a)
+		}
+	}
+	s.Accounts = injected
+	return nil
+}
+
+func (s *session) probeConfig() (string, error) {
+	dir, err := os.MkdirTemp(s.dir, "probe-")
+	if err != nil {
+		return "", err
+	}
+	for _, name := range []string{hostsFile, configFile} {
+		if err := s.copyProbeFile(dir, name); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func (s *session) copyProbeFile(dir, name string) error {
+	b, err := readFile(filepath.Join(s.dir, "before", name))
+	if err != nil || b == nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, name), b, 0o600)
+}
+
+func (s *session) strip(before, data []byte) ([]byte, error) {
+	original, err := decode(before)
+	if err != nil {
+		return nil, err
+	}
 	hosts, err := decode(data)
 	if err != nil {
 		return nil, err
 	}
 	for _, a := range s.Accounts {
-		stripAccount(hosts, a)
+		outcome := stripAccount(hosts, get(original, a.Host), a)
+		if s.writeback != nil {
+			s.writeback.Restorations = append(
+				s.writeback.Restorations,
+				hostRestoration{Host: a.Host, Outcome: outcome},
+			)
+		}
 	}
 	return yaml.Marshal(hosts)
 }
@@ -396,27 +446,73 @@ func (s *session) finish(ctx context.Context) error {
 	return err
 }
 
-func (a Account) inject(ctx context.Context, binary string, env []string, hosts *yaml.Node) string {
-	if a.Host == "" || a.User == "" || a.Token == "" {
-		return "invalid_account"
+func (a Account) inject(
+	ctx context.Context,
+	binary string,
+	env []string,
+	hosts *yaml.Node,
+) hostDecision {
+	h := get(hosts, a.Host)
+	decision := hostDecision{Host: a.Host, Source: "invalid_account"}
+	if !a.valid() {
+		return decision
 	}
-	if source := localAuthSource(get(hosts, a.Host)); source != "" {
-		return source
+	decision.Preferences = get(h, "user") != nil || get(h, "users") != nil
+	if user := get(h, "user"); user != nil {
+		decision.SameUser = user.Value == a.User
 	}
-	if token := tokenForHost(ctx, binary, a.Host, env); token != "" {
-		return localTokenSource(token, env)
+	if source := localAuthSource(h); source != "" {
+		decision.Source = source
+		return decision
 	}
+	token, err := resolveToken(ctx, binary, a.Host, env)
+	decision.Probe = "empty"
+	if err != nil {
+		decision.Probe = errorKind(err)
+		if !noTokenResult(err) {
+			decision.Source = "local_lookup_failed"
+			return decision
+		}
+	}
+	if token != "" {
+		decision.Probe = "token_returned"
+		decision.Source = localTokenSource(token, env)
+		return decision
+	}
+	a.overlay(hosts)
+	decision.Source = "forwarded"
+	return decision
+}
+
+// gh auth token reports an absent token as exit 1. It also collapses keyring
+// backend errors into that result; the CLI cannot distinguish those cases.
+// Execution failures and timeouts are not evidence of absent authentication.
+func noTokenResult(err error) bool {
+	exit, ok := errors.AsType[*exec.ExitError](err)
+	return ok && exit.ExitCode() == 1
+}
+
+func (a Account) valid() bool {
+	return a.Host != "" && a.User != "" && a.Token != ""
+}
+
+func (a Account) overlay(hosts *yaml.Node) {
 	h := ensure(hosts, a.Host)
 	put(h, "user", scalar(a.User))
 	put(h, "oauth_token", scalar(a.Token))
-	put(ensure(ensure(h, "users"), a.User), "oauth_token", scalar(a.Token))
-	return "forwarded"
+	// Tokenless registrations are settings, not usable accounts. Hide them
+	// only in the overlay so gh auth status does not report them as failures.
+	users := mapping()
+	put(users, a.User, get(get(h, "users"), a.User))
+	put(ensure(users, a.User), "oauth_token", scalar(a.Token))
+	put(h, "users", users)
 }
 
-func stripAccount(hosts *yaml.Node, a Account) {
+func stripAccount(hosts, original *yaml.Node, a Account) string {
 	h := get(hosts, a.Host)
 	if h == nil {
-		return
+		put(hosts, a.Host, original)
+		return "original_host_restored"
 	}
 	u := get(h, "users")
 	account := get(u, a.User)
@@ -425,25 +521,38 @@ func stripAccount(hosts *yaml.Node, a Account) {
 	// Successful keyring login removes both file tokens. Keep its account
 	// registration; the keyring itself remains entirely under gh's control.
 	keyringLogin := activeToken == nil && userToken == nil
-	removeForwardedToken(h, a.Token)
-	removeForwardedToken(account, a.Token)
+	removeForwardedToken(h, original, a.Token)
+	removeForwardedToken(account, get(get(original, "users"), a.User), a.Token)
 	if !keyringLogin {
-		stripRegistration(h, u, account, a.User)
+		stripRegistration(h, get(original, "user"), a.User)
 	}
+	// Restore hidden dotfiles registrations while retaining new local logins.
+	// No real original credential can be hidden: inject excludes those hosts.
+	users := get(h, "users")
+	if users == nil {
+		users = mapping()
+	}
+	put(h, "users", merge(mapping(), users, get(original, "users")))
 	if len(h.Content) == 0 {
 		put(hosts, a.Host, nil)
 	}
+	if keyringLogin {
+		return "keyring_registration"
+	}
+	return "preferences_restored"
 }
 
-func removeForwardedToken(n *yaml.Node, token string) {
+func removeForwardedToken(n, original *yaml.Node, token string) {
 	if t := get(n, "oauth_token"); t != nil && t.Value == token {
-		put(n, "oauth_token", nil)
+		put(n, "oauth_token", get(original, "oauth_token"))
 	}
 }
 
-func stripRegistration(host, users, account *yaml.Node, user string) {
-	if t := get(host, "user"); t != nil && t.Value == user && get(account, "oauth_token") == nil {
-		put(host, "user", nil)
+func stripRegistration(host, originalUser *yaml.Node, user string) {
+	users := get(host, "users")
+	account := get(users, user)
+	if forwardedRegistration(host, account, user) {
+		put(host, "user", originalUser)
 	}
 	if account != nil && len(account.Content) == 0 {
 		put(users, user, nil)
@@ -451,6 +560,16 @@ func stripRegistration(host, users, account *yaml.Node, user string) {
 	if users != nil && len(users.Content) == 0 {
 		put(host, "users", nil)
 	}
+}
+
+func hasToken(n *yaml.Node) bool {
+	t := get(n, "oauth_token")
+	return t != nil && t.Value != ""
+}
+
+func forwardedRegistration(host, account *yaml.Node, user string) bool {
+	t := get(host, "user")
+	return t != nil && t.Value == user && !hasToken(account) && !hasToken(host)
 }
 
 func (s *session) changedFile(name string) ([]byte, []byte, error) {
@@ -463,7 +582,7 @@ func (s *session) changedFile(name string) ([]byte, []byte, error) {
 		return nil, nil, boundary("config.changed_read", err)
 	}
 	if name == hostsFile && len(after) != 0 {
-		after, err = s.strip(after)
+		after, err = s.strip(before, after)
 		if err != nil {
 			return nil, nil, boundary("config.strip", err)
 		}
