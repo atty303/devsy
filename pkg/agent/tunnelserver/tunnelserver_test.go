@@ -25,7 +25,7 @@ type fakeStreamSnapshotVolumesServer struct {
 }
 
 func (f *fakeStreamSnapshotVolumesServer) Send(c *tunnel.Chunk) error {
-	f.chunks = append(f.chunks, c.Content)
+	f.chunks = append(f.chunks, bytes.Clone(c.Content))
 	return nil
 }
 
@@ -140,7 +140,7 @@ type fakeStreamServer struct {
 }
 
 func (f *fakeStreamServer) Send(c *tunnel.Chunk) error {
-	f.chunks = append(f.chunks, c.Content)
+	f.chunks = append(f.chunks, bytes.Clone(c.Content))
 	return nil
 }
 

@@ -41,6 +41,9 @@ const (
 	AgentLatestDownloadURL = GitHubReleasesURL + "/latest/download"
 )
 
+// Set only by the fork release build; explicit environment and context options retain precedence.
+var forkAgentDownloadBaseURL string
+
 // DefaultAgentDownloadURL returns the URL the host should download the agent
 // binary from. Honors the DEVSY_AGENT_URL override; otherwise uses the
 // version-pinned release URL, falling back to "latest" in dev builds.
@@ -50,6 +53,9 @@ func DefaultAgentDownloadURL() string {
 	}
 	if version.GetVersion() == version.DevVersion {
 		return AgentLatestDownloadURL
+	}
+	if forkAgentDownloadBaseURL != "" {
+		return strings.TrimRight(forkAgentDownloadBaseURL, "/") + "/" + version.GetVersion()
 	}
 	return AgentDownloadBaseURL + version.GetVersion()
 }

@@ -92,7 +92,11 @@ func TestEnsureImage_BuiltImageNeverFoundDoesNotPull(t *testing.T) {
 	withShortImageInspectPoll(t)
 	marker := filepath.Join(t.TempDir(), "pulled")
 	bin := fakeEnsureImageDocker(t, "Error response from daemon: No such image: x", marker)
+
 	d := &dockerDriver{Docker: &docker.DockerHelper{DockerCommand: bin}}
+	// Warm the executable fixture before starting the deliberately short polling deadline.
+	_, inspectErr := d.Docker.InspectImage(context.Background(), testImageRef, false)
+	require.ErrorIs(t, inspectErr, docker.ErrImageNotFound)
 
 	err := d.EnsureImage(
 		context.Background(),
