@@ -13,5 +13,8 @@
       "checks": ["gh-relay"]
     }
   ],
-  "patches": ["hack/fork_release/patches/agent-source.patch"]
+  "patches": [
+    "hack/fork_release/patches/agent-source.patch",
+    "hack/fork_release/patches/test-fixtures.patch"
+  ]
 }
