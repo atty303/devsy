@@ -24,6 +24,7 @@ type StartServicesDaemonOptions struct {
 type credentialConfig struct {
 	docker          bool
 	git             bool
+	github          bool
 	gitSSHSignature bool
 }
 
@@ -52,6 +53,7 @@ func StartServicesDaemon(ctx context.Context, opts StartServicesDaemonOptions) e
 			Workspace:                      opts.Client.WorkspaceConfig(),
 			ConfigureDockerCredentials:     credConfig.docker,
 			ConfigureGitCredentials:        credConfig.git,
+			ConfigureGitHubCredentials:     credConfig.github,
 			ConfigureGitSSHSignatureHelper: credConfig.gitSSHSignature,
 			GitSSHSigningKey:               opts.GitSSHSigningKey,
 		},
@@ -70,6 +72,9 @@ func getCredentialConfig(
 	workspace *managementv1.DevsyWorkspaceInstance,
 ) credentialConfig {
 	cfg := credentialConfig{
+		github: devsyConfig.ContextOption(
+			config.ContextOptionGitHubCLIForwarding,
+		) == config.BoolTrue,
 		docker: devsyConfig.ContextOption(
 			config.ContextOptionSSHInjectDockerCredentials,
 		) == config.BoolTrue,
@@ -96,6 +101,7 @@ func getCredentialConfig(
 	}
 	if instanceCredentialForwarding.Git != nil {
 		cfg.git = !instanceCredentialForwarding.Git.Disabled
+		cfg.github = cfg.github && !instanceCredentialForwarding.Git.Disabled
 		cfg.gitSSHSignature = !instanceCredentialForwarding.Git.Disabled
 	}
 
