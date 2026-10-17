@@ -134,8 +134,13 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x "$RUNNER_TEMP/binaries/devsy-linux-amd64"
-          checks="$(jq -er '.checks[]' "$RUNNER_TEMP/assembly/build-info.json")"
-          mapfile -t required_checks <<< "$checks"
+          checks="$(jq -cer '.checks | if type == "array" and all(.[]; type == "string") then . else error("checks must be an array of strings") end' "$RUNNER_TEMP/assembly/build-info.json")"
+          required_checks=()
+          if [[ "$checks" != '[]' ]]; then
+            mapfile -t required_checks < <(jq -r '.[]' <<< "$checks")
+          else
+            echo 'No additional PR E2Es selected; shared unit, lint and build gates are required.'
+          fi
           passed=0
           for check in "${required_checks[@]}"; do
             printf 'Required check started: %s\n' "$check"

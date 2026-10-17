@@ -27,6 +27,10 @@ func TestConfigurationStopsUnknownChecksAndDuplicateSources(t *testing.T) {
 		},
 	}
 	require.ErrorContains(t, validate(c), "unknown check")
+	c.Branches[0].Checks = nil
+	require.ErrorContains(t, validate(c), "explicit checks array")
+	c.Branches[0].Checks = []string{}
+	require.NoError(t, validate(c))
 	c.Branches[0].Checks = []string{"gh-relay"}
 	c.Branches = append(c.Branches, c.Branches[0])
 	require.ErrorContains(t, validate(c), "duplicate branch")

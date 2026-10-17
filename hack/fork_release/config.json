@@ -11,6 +11,11 @@
       "repository": "atty303/devsy",
       "branch": "atty303/gh-relay",
       "checks": ["gh-relay"]
+    },
+    {
+      "repository": "atty303/devsy",
+      "branch": "atty303/apple",
+      "checks": []
     }
   ],
   "patches": [

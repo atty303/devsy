@@ -191,8 +191,9 @@ func validateBranch(b branch) error {
 		strings.ContainsAny(b.Branch, "\r\n\x00 ") {
 		return errors.New("invalid branch")
 	}
-	if len(b.Checks) == 0 {
-		return fmt.Errorf("branch %s requires checks", b.Branch)
+	// An explicit empty list keeps the shared unit/lint/build gates without extra E2Es.
+	if b.Checks == nil {
+		return fmt.Errorf("branch %s requires an explicit checks array", b.Branch)
 	}
 	if err := validateChecks(b.Checks); err != nil {
 		return err
@@ -442,6 +443,7 @@ func (a *assembly) readConfig() error {
 }
 
 func (a *assembly) resolveBranches() error {
+	a.m.Checks = []string{}
 	for i := range a.m.Config.Branches {
 		b := &a.m.Config.Branches[i]
 		sha, err := resolve(a.r, a.manager, b.Repository, b.Branch)
