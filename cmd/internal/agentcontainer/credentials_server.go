@@ -20,6 +20,7 @@ import (
 	"github.com/devsy-org/devsy/pkg/dockercredentials"
 	cliflags "github.com/devsy-org/devsy/pkg/flags"
 	"github.com/devsy-org/devsy/pkg/flags/names"
+	"github.com/devsy-org/devsy/pkg/ghcredentials"
 	"github.com/devsy-org/devsy/pkg/gitcredentials"
 	"github.com/devsy-org/devsy/pkg/gitsshsigning"
 	"github.com/devsy-org/devsy/pkg/log"
@@ -34,6 +35,7 @@ type CredentialsServerCmd struct {
 	User string
 
 	ConfigureGitHelper    bool
+	ConfigureGitHubHelper bool
 	ConfigureDockerHelper bool
 
 	ForwardPorts      bool
@@ -60,6 +62,12 @@ func NewCredentialsServerCmd(flags *flags.GlobalFlags) *cobra.Command {
 	}
 	cliflags.Add(
 		credentialsServerCmd,
+		cliflags.Bool(
+			&cmd.ConfigureGitHubHelper,
+			"configure-github-helper",
+			false,
+			"If true will configure GitHub CLI authentication forwarding",
+		),
 		cliflags.Bool(
 			&cmd.ConfigureGitHelper,
 			names.ConfigureGitHelper,
@@ -111,6 +119,11 @@ func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) error {
 	}
 
 	cmd.maybeForwardPorts(runCtx, tunnelClient)
+	if cmd.ConfigureGitHubHelper {
+		if err := ghcredentials.Install(port); err != nil {
+			log.Debug("GitHub CLI wrapper installation unavailable")
+		}
+	}
 
 	if err := cmd.configureDockerHelper(port); err != nil {
 		return err

@@ -106,6 +106,10 @@ tasks:
       export PATH="$(go env GOPATH)/bin:$PATH"
       protoc -I . tunnel.proto --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative
 
+  cli:test:gh-relay:
+    desc: verify GitHub CLI relay with isolated real gh and Linux keyring (requires Docker)
+    cmd: go test -tags=ghrelay ./pkg/ghcredentials -run "^TestRealGitHubCLI$" -v -count=1 -timeout=10m
+
   cli:test:
     desc: run devsy unit tests
     cmd: |

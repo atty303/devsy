@@ -50,6 +50,7 @@ type RunServicesOptions struct {
 	Workspace                      *provider.Workspace
 	ConfigureDockerCredentials     bool
 	ConfigureGitCredentials        bool
+	ConfigureGitHubCredentials     bool
 	ConfigureGitSSHSignatureHelper bool
 	GitSSHSigningKey               string
 	// ExtraListeners holds pre-bound listeners keyed by "host:port" so the
@@ -112,6 +113,7 @@ func runTunnelServer(ctx context.Context, cancel context.CancelFunc, p tunnelSer
 		p.forwarder,
 		p.opts.Workspace,
 		tunnelserver.WithPlatformOptions(p.opts.PlatformOptions),
+		tunnelserver.WithAllowGitHubCredentials(p.opts.ConfigureGitHubCredentials),
 	)
 	if err != nil {
 		p.errChan <- fmt.Errorf("run tunnel server: %w", err)
@@ -155,6 +157,9 @@ func buildCredentialsCommand(ctx context.Context, opts RunServicesOptions) strin
 	)
 	if opts.ConfigureGitCredentials {
 		command += " --configure-git-helper"
+	}
+	if opts.ConfigureGitHubCredentials {
+		command += " --configure-github-helper"
 	}
 	if opts.ConfigureGitSSHSignatureHelper {
 		workingDir := ""
