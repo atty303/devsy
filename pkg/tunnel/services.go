@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -225,15 +224,12 @@ func runServicesIteration(
 		Stdout:  stdoutWriter,
 		Stderr:  writer,
 	})
-	// The remote process may exit without opening its tunnel (port collision).
-	// Stop the local server before waiting for it; our pipe writer is still open.
+	// Stop the local server when the remote command exits; our pipe writer
+	// is still open, so waiting for EOF would not finish.
 	cancel()
 	serverErr := <-errChan
 	if err != nil {
 		return err
-	}
-	if errors.Is(serverErr, context.Canceled) {
-		return nil
 	}
 	return serverErr
 }
@@ -259,37 +255,16 @@ func RunServices(ctx context.Context, opts RunServicesOptions) error {
 
 	resolver := buildPortAttributeResolver(result)
 
-	return runServicesUntilCanceled(ctx, func() error {
+	return retry.OnError(wait.Backoff{
+		Steps:    maxRetrySteps,
+		Duration: retryDuration,
+		Factor:   retryFactor,
+		Jitter:   retryJitter,
+	}, func(err error) bool {
+		return ctx.Err() == nil
+	}, func() error {
 		return runServicesIteration(ctx, opts, forwardedPorts, resolver)
 	})
-}
-
-func runServicesUntilCanceled(ctx context.Context, iteration func() error) error {
-	for ctx.Err() == nil {
-		err := retry.OnError(wait.Backoff{
-			Steps:    maxRetrySteps,
-			Duration: retryDuration,
-			Factor:   retryFactor,
-			Jitter:   retryJitter,
-		}, func(_ error) bool {
-			return ctx.Err() == nil
-		}, iteration)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		// A competing session exits successfully without serving. Keep the
-		// services connection eligible to claim the port once its owner ends.
-		log.Debug("credentials service ended; waiting to reacquire relay")
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(retryDuration):
-		}
-	}
-	return nil
 }
 
 // buildPortAttributeResolver loads port attributes from the container result.

@@ -9,7 +9,8 @@ export HOME="$root/home" XDG_CONFIG_HOME="$root/home/config" XDG_STATE_HOME="$ro
 export XDG_DATA_HOME="$root/home/data" XDG_CACHE_HOME="$root/home/cache" XDG_RUNTIME_DIR="$root/home/run" DEVSY_HOME="$root/devsy"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$root/home/gitconfig" GIT_TERMINAL_PROMPT=0
 unset GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS DEVSY_GIT_HELPER_PORT SSH_AUTH_SOCK DEVSY_CONTEXT DEVSY_PROVIDER
-owner= second= third= foreign=
+pids=()
+names=(a b c d foreign)
 if [[ ${1:-} = --assert-clean ]]; then
   [[ ! -d "$root" ]]
   ! docker inspect "$id" >/dev/null 2>&1
@@ -22,10 +23,11 @@ cleanup() {
     mkdir -p "$RELAY_ARTIFACT_DIR"
     cp "$root/"*.log "$RELAY_ARTIFACT_DIR/" 2>/dev/null || true
   fi
-  for socket in "$root/a.socket" "$root/b.socket" "$root/c.socket" "$root/foreign.socket"; do
+  for name in "${names[@]}"; do
+    socket="$root/$name.socket"
     ssh "${sshbase[@]}" -S "$socket" -O exit root@devsy-workspace >/dev/null 2>&1 || true
   done
-  for pid in "$owner" "$second" "$third" "$foreign"; do
+  for pid in "${pids[@]}"; do
     if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
   done
   "$devsy" --home "$root/devsy" workspace delete "$id" --force --ignore-not-found > /dev/null 2>&1 || true
@@ -43,14 +45,14 @@ cd "$root/home"
 cat > "$root/helper" <<'HELPER'
 #!/bin/sh
 cat >/dev/null
-if test "$1" = get; then printf 'username=relay-test\npassword=relay-test-dummy\n'; fi
+if test "$1" = get; then printf 'username=relay-test\npassword=relay-test-%s-dummy\n' "${RELAY_TEST_SESSION:-a}"; fi
 HELPER
 chmod 700 "$root/helper"
 git config --global credential.helper "$root/helper"
 git config --global user.name 'Relay Test'
 git config --global user.email 'relay@example.invalid'
 cat > "$root/workspace/.devcontainer/devcontainer.json" <<CONFIG
-{"image":"mcr.microsoft.com/devcontainers/base:ubuntu","remoteUser":"root","runArgs":["--name","$id"]}
+{"image":"mcr.microsoft.com/devcontainers/base:ubuntu","remoteUser":"root","runArgs":["--platform","linux/amd64","--name","$id"]}
 CONFIG
 run() { "$devsy" --home "$root/devsy" "$@"; }
 guest() { docker exec "$id" sh -c "$1"; }
@@ -60,8 +62,8 @@ eventually() {
 }
 ready() { guest 'curl --noproxy "*" -fsS --max-time 2 http://localhost:12049/ >/dev/null' 2>/dev/null; }
 fill() {
-  guest 'printf "protocol=https\nhost=relay.example.invalid\n\n" | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null' |
-    grep -qx 'password=relay-test-dummy'
+  docker exec -u "${1:-root}" "$id" sh -c 'printf "protocol=https\nhost=relay.example.invalid\n\n" | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null' |
+    grep -qx "password=relay-test-${2:-a}-dummy"
 }
 run context set -o TELEMETRY=false >/dev/null
 run provider add docker >/dev/null
@@ -73,46 +75,89 @@ if [[ -n ${RELAY_AGENT_BINARY:-} ]]; then
   [[ "$actual" = "$expected" ]]
   echo 'PASS environment agent matches supplied build'
 fi
-proxy="'$devsy' --home '$root/devsy' --log-level debug workspace ssh '$id' --stdio --user root"
-ssh "${sshbase[@]}" -o "ProxyCommand=$proxy" -M -S "$root/a.socket" -N root@devsy-workspace > "$root/a.log" 2>&1 & owner=$!
-echo "$owner" >> "$root/ssh-pids"
+start_session() {
+  local index=$1 user=$2 name=${names[$1]}
+  local proxy="env RELAY_TEST_SESSION=$name '$devsy' --home '$root/devsy' --log-level debug workspace ssh '$id' --stdio --user $user"
+  ssh "${sshbase[@]}" -o "ProxyCommand=$proxy" -M -S "$root/$name.socket" -N "$user@devsy-workspace" > "$root/$name.log" 2>&1 &
+  pids[$index]=$!
+  echo "$!" >> "$root/ssh-pids"
+  eventually ssh "${sshbase[@]}" -o ProxyCommand=false -S "$root/$name.socket" "$user@devsy-workspace" true
+}
+stop_session() {
+  local index=$1 user=$2 name=${names[$1]}
+  ssh "${sshbase[@]}" -S "$root/$name.socket" -O exit "$user@devsy-workspace"
+  wait "${pids[$index]}" 2>/dev/null || true
+  pids[$index]=''
+}
+processes() {
+  guest 'ps -ww -eo pid,args' > "$root/processes.log"
+  awk 'index($0, "/devsy internal agent container credentials-server ") {print $1}' "$root/processes.log" | sort -n
+}
+assert_single_start() {
+  local name=${names[$1]} count
+  count=$(grep -c 'execute SSH server command:.*credentials-server' "$root/$name.log")
+  if [[ $count != 1 ]]; then echo "FAIL $name recreated its services command $count times" >&2; return 1; fi
+}
+winner() {
+  for index in 1 2 3; do
+    if [[ -n ${pids[$index]} ]] && grep -q 'credentials server started' "$root/${names[$index]}.log"; then
+      echo "$index"; return
+    fi
+  done
+  return 1
+}
+start_session 0 root
 eventually ready
 eventually fill
 echo 'PASS A owns a working credential relay'
-touch "$root/owner-ready"
-ssh "${sshbase[@]}" -o "ProxyCommand=$proxy" -M -S "$root/b.socket" -N root@devsy-workspace > "$root/b.log" 2>&1 & second=$!
-eventually ssh "${sshbase[@]}" -o ProxyCommand=false -S "$root/b.socket" root@devsy-workspace true
-eventually fill
-# B has completed its services attempt before A ends, not a race on startup.
+for index in 1 2 3; do
+  start_session "$index" root
+  eventually grep -q 'another session already provides' "$root/${names[$index]}.log"
+done
+before=$(processes)
+# This exceeds multiple retry intervals; competing connections must persist.
+sleep 3
+for index in 1 2 3; do assert_single_start "$index"; done
+[[ $(printf '%s\n' "$before" | wc -l | tr -d ' ') = 4 ]]
+[[ $(processes) = "$before" ]]
+for index in 1 2 3; do
+  ssh "${sshbase[@]}" -o ProxyCommand=false -S "$root/${names[$index]}.socket" root@devsy-workspace true
+  eventually grep -q 'received ping from agent' "$root/${names[$index]}.log"
+done
+echo 'PASS B/C/D keep stable remote processes, initialized RPC, and responsive SSH while waiting'
+stop_session 1 root
+only_processes() { [[ $(processes | wc -l | tr -d ' ') = "$1" ]]; }
+eventually only_processes 3
+fill
+start_session 1 root
 eventually grep -q 'another session already provides' "$root/b.log"
-ssh "${sshbase[@]}" -S "$root/a.socket" -O exit root@devsy-workspace
-wait "$owner" 2>/dev/null || true; owner=
-kill -0 "$second"
-if [[ ${RELAY_EXPECT_LOSS:-0} = 1 ]]; then
-  eventually bash -c '! docker exec "$1" curl --noproxy "*" -fsS --max-time 2 http://localhost:12049/ >/dev/null 2>&1' sh "$id"
-  if fill; then echo 'Unexpected credentials after owner exit' >&2; exit 1; fi
-  echo 'PASS reproduced loss with B still connected'
-else
-  eventually fill
-  kill -0 "$second"
-  echo 'PASS B reacquired credential relay after A exited'
-  ssh "${sshbase[@]}" -o "ProxyCommand=$proxy" -M -S "$root/c.socket" -N root@devsy-workspace > "$root/c.log" 2>&1 & third=$!
-  eventually grep -q 'another session already provides' "$root/c.log"
-  ssh "${sshbase[@]}" -S "$root/b.socket" -O exit root@devsy-workspace
-  wait "$second" 2>/dev/null || true; second=
-  eventually fill
-  echo 'PASS repeated same-user competition reacquires relay'
-  other_proxy="'$devsy' --home '$root/devsy' --log-level debug workspace ssh '$id' --stdio --user vscode"
-  ssh "${sshbase[@]}" -o "ProxyCommand=$other_proxy" -M -S "$root/foreign.socket" -N vscode@devsy-workspace > "$root/foreign.log" 2>&1 & foreign=$!
-  eventually grep -q 'already owned by user root' "$root/foreign.log"
-  [[ $(guest 'curl --noproxy "*" -fsS http://localhost:12049/owner') = root ]]
-  fill
-  ssh "${sshbase[@]}" -S "$root/foreign.socket" -O exit vscode@devsy-workspace
-  wait "$foreign" 2>/dev/null || true; foreign=
-  [[ $(guest 'curl --noproxy "*" -fsS http://localhost:12049/owner') = root ]]
-  echo 'PASS foreign-user contender cannot steal relay and cancels cleanly'
-  ssh "${sshbase[@]}" -S "$root/c.socket" -O exit root@devsy-workspace
-  wait "$third" 2>/dev/null || true; third=
-  eventually bash -c '! docker exec "$1" curl --noproxy "*" -fsS --max-time 2 http://localhost:12049/ >/dev/null 2>&1' sh "$id"
-  echo 'PASS canceled sessions leave no credential listener'
+eventually only_processes 4
+echo 'PASS disconnected idle waiter exits without disturbing the owner'
+touch "$root/waiters-ready"
+if [[ ${RELAY_WAIT_FOR_CANCEL:-0} = 1 ]]; then
+  while :; do sleep 1; done
 fi
+stop_session 0 root
+eventually winner >/dev/null
+eventually fill root "${names[$(winner)]}"
+for round in 1 2; do
+  index=$(winner)
+  stop_session "$index" root
+  eventually winner >/dev/null
+  eventually fill root "${names[$(winner)]}"
+done
+echo 'PASS repeated ownership handoff among B/C/D restores actual Git credentials'
+index=$(winner)
+start_session 4 vscode
+eventually grep -q 'already owned by user root' "$root/foreign.log"
+[[ $(guest 'curl --noproxy "*" -fsS http://localhost:12049/owner') = root ]]
+fill root "${names[$index]}"
+sleep 3
+assert_single_start 4
+stop_session "$index" root
+eventually fill vscode foreign
+[[ $(guest 'curl --noproxy "*" -fsS http://localhost:12049/owner') = vscode ]]
+echo 'PASS foreign user waits without takeover, then acquires after release'
+stop_session 4 vscode
+eventually bash -c '! docker exec "$1" curl --noproxy "*" -fsS --max-time 2 http://localhost:12049/ >/dev/null 2>&1' sh "$id"
+echo 'PASS canceled sessions leave no credential listener'

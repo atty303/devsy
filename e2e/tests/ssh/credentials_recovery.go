@@ -46,8 +46,8 @@ var _ = ginkgo.Describe(
 	func() {
 		var wd, root string
 		ginkgo.BeforeEach(func() {
-			if runtime.GOOS == "windows" {
-				ginkgo.Skip("requires POSIX shell and OpenSSH")
+			if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+				ginkgo.Skip("requires the Linux amd64 SSH CI environment")
 			}
 			var err error
 			wd, err = os.Getwd()
@@ -64,17 +64,18 @@ var _ = ginkgo.Describe(
 				)
 				framework.ExpectNoError(command.Run())
 			})
-		ginkgo.It("cleans up the container and SSH processes when the test is canceled",
+		ginkgo.It("allows independent cleanup after the test harness is canceled",
 			ginkgo.SpecTimeout(framework.TimeoutLong()), func(ctx context.Context) {
 				runCtx, cancel := context.WithCancel(ctx)
 				defer cancel()
 				command := relayCommand(runCtx, wd, root)
+				command.Env = append(command.Env, "RELAY_WAIT_FOR_CANCEL=1")
 				ginkgo.DeferCleanup(
 					func(cleanupCtx context.Context) { framework.ExpectNoError(cleanupRelay(cleanupCtx, command)) },
 				)
 				done := make(chan error, 1)
 				go func() { done <- command.Run() }()
-				gomega.Eventually(func() bool { _, err := os.Stat(filepath.Join(root, "owner-ready")); return err == nil }).
+				gomega.Eventually(func() bool { _, err := os.Stat(filepath.Join(root, "waiters-ready")); return err == nil }).
 					WithContext(ctx).
 					WithTimeout(framework.TimeoutLong()).
 					Should(gomega.BeTrue())
