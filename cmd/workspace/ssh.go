@@ -574,6 +574,9 @@ func (cmd *SSHCmd) startTunnelServices(
 		ConfigureDockerCredentials: devsyConfig.ContextOption(
 			config.ContextOptionSSHInjectDockerCredentials,
 		) == config.BoolTrue,
+		ConfigureGitHubCredentials: devsyConfig.ContextOption(
+			config.ContextOptionGitHubCLIForwarding,
+		) == config.BoolTrue,
 		ConfigureGitCredentials: devsyConfig.ContextOption(
 			config.ContextOptionSSHInjectGitCredentials,
 		) == config.BoolTrue,
@@ -656,6 +659,7 @@ func resolveMergedWorkspaceFolder(
 type startServicesOptions struct {
 	ConfigureDockerCredentials     bool
 	ConfigureGitCredentials        bool
+	ConfigureGitHubCredentials     bool
 	ConfigureGitSSHSignatureHelper bool
 	GitSSHSigningKey               string
 }
@@ -680,6 +684,7 @@ func (cmd *SSHCmd) startServices(
 				Workspace:                      workspace,
 				ConfigureDockerCredentials:     opts.ConfigureDockerCredentials,
 				ConfigureGitCredentials:        opts.ConfigureGitCredentials,
+				ConfigureGitHubCredentials:     opts.ConfigureGitHubCredentials,
 				ConfigureGitSSHSignatureHelper: opts.ConfigureGitSSHSignatureHelper,
 				GitSSHSigningKey:               opts.GitSSHSigningKey,
 			},
