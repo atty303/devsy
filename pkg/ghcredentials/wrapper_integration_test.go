@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/devsy-org/devsy/pkg/agent/tunnelserver"
+	"github.com/devsy-org/devsy/pkg/docker"
 	"github.com/stretchr/testify/require"
 )
 
@@ -241,6 +242,19 @@ exec dbus-run-session -- sh -c '
 	require.NoError(t, err)
 	require.NoError(t, guest.Start())
 	t.Cleanup(func() {
+		if runtime.GOOS == "linux" {
+			// Restore private bind-mount ownership before removing the container.
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cleanupCancel()
+			helper := &docker.DockerHelper{DockerCommand: "docker"}
+			args := []string{
+				"exec", "--user", "root", name, "chown", "-Rh",
+				fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "/fixture",
+			}
+			if err := helper.Run(cleanupCtx, args, docker.Streams{Stderr: os.Stderr}); err != nil {
+				t.Errorf("restore private fixture ownership: %v", err)
+			}
+		}
 		//nolint:gosec // name is the random, test-owned container name.
 		_ = exec.Command("docker", "rm", "-f", name).Run()
 		_ = guest.Wait()
