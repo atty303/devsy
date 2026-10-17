@@ -129,7 +129,11 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x "$RUNNER_TEMP/binaries/devsy-linux-amd64"
-          while IFS= read -r check; do
+          checks="$(jq -er '.checks[]' "$RUNNER_TEMP/assembly/build-info.json")"
+          mapfile -t required_checks <<< "$checks"
+          passed=0
+          for check in "${required_checks[@]}"; do
+            printf 'Required check started: %s\n' "$check"
             case "$check" in
               credential-relay)
                 DEVSY_AGENT_PREFER_DOWNLOAD=false RELAY_AGENT_BINARY="$RUNNER_TEMP/binaries/devsy-linux-amd64" \
@@ -140,7 +144,10 @@ jobs:
                 ;;
               *) echo "Unknown required check: $check" >&2; exit 1 ;;
             esac
-          done < <(jq -r '.checks[]' "$RUNNER_TEMP/assembly/build-info.json")
+            passed=$((passed + 1))
+            printf 'Required check passed: %s\n' "$check"
+          done
+          test "$passed" -eq "${#required_checks[@]}"
   publish:
     needs: [prepare, verify-build, e2e]
     runs-on: ubuntu-latest
