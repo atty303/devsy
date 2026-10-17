@@ -21,24 +21,18 @@ index 1a60d1c85..db60ef211 100644
  }
  
 diff --git a/pkg/driver/docker/lifecycle_test.go b/pkg/driver/docker/lifecycle_test.go
-index 2239fbae1..73479d201 100644
+index 2239fbae1..737c2cab1 100644
 --- a/pkg/driver/docker/lifecycle_test.go
 +++ b/pkg/driver/docker/lifecycle_test.go
-@@ -4,6 +4,7 @@ import (
- 	"context"
- 	"fmt"
- 	"os"
-+	"os/exec"
- 	"path/filepath"
- 	"strconv"
- 	"testing"
-@@ -92,6 +93,9 @@ func TestEnsureImage_BuiltImageNeverFoundDoesNotPull(t *testing.T) {
+@@ -92,7 +92,11 @@ func TestEnsureImage_BuiltImageNeverFoundDoesNotPull(t *testing.T) {
  	withShortImageInspectPoll(t)
  	marker := filepath.Join(t.TempDir(), "pulled")
  	bin := fakeEnsureImageDocker(t, "Error response from daemon: No such image: x", marker)
 +
-+	// Warm the executable fixture before starting the deliberately short polling deadline.
-+	require.Error(t, exec.Command(bin, "inspect").Run())
  	d := &dockerDriver{Docker: &docker.DockerHelper{DockerCommand: bin}}
++	// Warm the executable fixture before starting the deliberately short polling deadline.
++	_, inspectErr := d.Docker.InspectImage(context.Background(), testImageRef, false)
++	require.ErrorIs(t, inspectErr, docker.ErrImageNotFound)
  
  	err := d.EnsureImage(
+ 		context.Background(),

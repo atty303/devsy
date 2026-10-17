@@ -23,6 +23,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: go test ./hack/fork_release
       - id: prepare
         env:
@@ -57,9 +58,14 @@ jobs:
           path: ${{ runner.temp }}/assembly
       - shell: bash
         run: git clone "$RUNNER_TEMP/assembly/source.bundle" "$RUNNER_TEMP/source"
+      - shell: bash
+        run: cp "$RUNNER_TEMP/source/go.sum" .fork-release-source.sum
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: ${{ runner.temp }}/source/go.mod
+          cache-dependency-path: |
+            .fork-release-source.sum
+            .github/workflows/fork-release.yml
       - name: Unit tests
         shell: bash
         working-directory: ${{ runner.temp }}/source
@@ -110,9 +116,13 @@ jobs:
           name: binaries-Linux
           path: ${{ runner.temp }}/binaries
       - run: git clone "$RUNNER_TEMP/assembly/source.bundle" "$RUNNER_TEMP/source"
+      - run: cp "$RUNNER_TEMP/source/go.sum" .fork-release-source.sum
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: ${{ runner.temp }}/source/go.mod
+          cache-dependency-path: |
+            .fork-release-source.sum
+            .github/workflows/fork-release.yml
       - name: Selected PR end-to-end tests
         shell: bash
         working-directory: ${{ runner.temp }}/source
@@ -152,6 +162,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+          cache: false
       - name: Publish immutable release
         env:
           GH_TOKEN: ${{ github.token }}
