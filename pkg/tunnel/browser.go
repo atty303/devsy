@@ -110,6 +110,9 @@ func runBrowserTunnelServices(
 			ConfigureDockerCredentials: p.DevsyConfig.ContextOption(
 				config.ContextOptionSSHInjectDockerCredentials,
 			) == config.BoolTrue,
+			ConfigureGitHubCredentials: p.DevsyConfig.ContextOption(
+				config.ContextOptionGitHubCLIForwarding,
+			) == config.BoolTrue,
 			ConfigureGitCredentials: p.DevsyConfig.ContextOption(
 				config.ContextOptionSSHInjectGitCredentials,
 			) == config.BoolTrue,
