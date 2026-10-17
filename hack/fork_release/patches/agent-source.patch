@@ -48,3 +48,54 @@
 +	version.DevVersion = version.GetVersion()
 +	require.Equal(t, AgentLatestDownloadURL, DefaultAgentDownloadURL())
 +}
+diff --git a/pkg/config/fork_release_linked_test.go b/pkg/config/fork_release_linked_test.go
+new file mode 100644
+index 000000000..66b46fc10
+--- /dev/null
++++ b/pkg/config/fork_release_linked_test.go
+@@ -0,0 +1,23 @@
++//go:build forkrelease
++
++package config
++
++import (
++	"os"
++	"testing"
++
++	"github.com/devsy-org/devsy/pkg/version"
++	"github.com/stretchr/testify/require"
++)
++
++func TestForkReleaseLinkedDefaults(t *testing.T) {
++	expected := os.Getenv("DEVSY_FORK_TEST_VERSION")
++	require.NotEmpty(t, expected)
++	t.Setenv(EnvAgentURL, "")
++	require.Equal(t, expected, version.GetVersion())
++	require.Equal(
++		t,
++		"https://github.com/atty303/devsy/releases/download/"+expected,
++		DefaultAgentDownloadURL(),
++	)
++}
+diff --git a/pkg/options/resolve_test.go b/pkg/options/resolve_test.go
+index 61ef45cc1..047928466 100644
+--- a/pkg/options/resolve_test.go
++++ b/pkg/options/resolve_test.go
+@@ -834,15 +834,16 @@ func TestResolveAgentMicrosandboxConfig(t *testing.T) {
+ }
+ 
+ func TestResolveAgentDownloadURL(t *testing.T) {
++	t.Setenv(config.EnvAgentURL, "")
+ 	const (
+ 		localHost         = "http://localhost:8080/"
+ 		localHostTrail    = "http://localhost:8080///"
+ 		exampleAgent      = "https://example.com/agent/"
+ 		exampleAgentTrail = "https://example.com/agent///"
+ 		exampleAgentPlain = "https://example.com/agent"
+-		defaultURL        = config.AgentLatestDownloadURL
+ 	)
+ 
++	defaultURL := config.DefaultAgentDownloadURL()
+ 	cases := []struct {
+ 		name       string
+ 		envURL     string

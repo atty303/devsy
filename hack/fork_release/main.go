@@ -276,7 +276,7 @@ func mergeBranch(r runner, source, manager string, b branch) error {
 		"--no-ff",
 		"--no-edit",
 		"-m",
-		"Merge "+b.Repository+":"+b.Branch,
+		"build(fork): integrate "+b.Repository+":"+b.Branch,
 		b.SHA,
 	)
 	if mergeErr == nil {
@@ -350,7 +350,7 @@ func commitResolution(r runner, source, before string, b branch) error {
 		"-p",
 		b.SHA,
 		"-m",
-		"Merge "+b.Repository+":"+b.Branch+" with recorded resolution",
+		"build(fork): integrate "+b.Repository+":"+b.Branch+" with recorded resolution",
 	)
 	if err != nil {
 		return err
@@ -670,6 +670,21 @@ func buildArchitectures(r runner, source, out string, m manifest) error {
 		"-X github.com/devsy-org/devsy/pkg/config.forkAgentDownloadBaseURL=" +
 			"https://github.com/" + fork + "/releases/download/",
 	}, " ")
+	if _, err := r.run(
+		source,
+		[]string{"DEVSY_FORK_TEST_VERSION=" + m.Version},
+		"go",
+		"test",
+		"-tags",
+		"forkrelease",
+		"-ldflags",
+		flags,
+		"./pkg/config",
+		"./pkg/options",
+		"./pkg/agent",
+	); err != nil {
+		return err
+	}
 	for _, arch := range []string{"amd64", "arm64"} {
 		binary := filepath.Join(out, "devsy-"+runtime.GOOS+"-"+arch)
 		args := []string{commandBuild, "-trimpath", "-ldflags", flags, "-o", binary, "."}

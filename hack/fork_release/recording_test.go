@@ -55,3 +55,14 @@ func TestRecordingFailureAndCapacityPreserveCommandResult(t *testing.T) {
 	}
 	require.Empty(t, buffer.String())
 }
+
+func TestRecordingCannotClaimCompleteAfterDroppingAnOperation(t *testing.T) {
+	var buffer bytes.Buffer
+	record := boundedRecord{writer: &buffer, remaining: 5}
+	_, err := record.Write([]byte("too large"))
+	require.NoError(t, err)
+	_, err = record.Write([]byte("done"))
+	require.NoError(t, err)
+	require.True(t, record.degraded)
+	require.Empty(t, buffer.String())
+}

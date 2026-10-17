@@ -16,6 +16,9 @@ type boundedRecord struct {
 }
 
 func (b *boundedRecord) Write(p []byte) (int, error) {
+	if b.degraded {
+		return len(p), nil
+	}
 	if len(p) > b.remaining {
 		if !b.degraded {
 			fmt.Fprintln(os.Stderr, "operation recording partial: capacity exceeded")
