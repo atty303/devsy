@@ -17,6 +17,8 @@ import (
 	"github.com/devsy-org/devsy/pkg/config"
 	"github.com/devsy-org/devsy/pkg/log"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 const DefaultPort = "12049"
@@ -120,6 +122,7 @@ func newCredentialsHandler(
 			return err
 		},
 		"/git-credentials":            handleGitCredentialsRequest,
+		"/github-credentials":         handleGitHubCredentialsRequest,
 		"/docker-credentials":         handleDockerCredentialsRequest,
 		"/git-ssh-signature":          handleGitSSHSignatureRequest,
 		"/devsy-platform-credentials": handleDevsyPlatformCredentialsRequest,
@@ -141,6 +144,41 @@ func newCredentialsHandler(
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 		}
 	})
+}
+
+func handleGitHubCredentialsRequest(
+	ctx context.Context,
+	writer http.ResponseWriter,
+	request *http.Request,
+	client CredentialsClient,
+) error {
+	if request.Method != http.MethodPost {
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return nil
+	}
+	githubClient, ok := client.(interface {
+		GitHubCredentials(context.Context, *tunnel.Empty, ...grpc.CallOption) (*tunnel.Message, error)
+	})
+	if !ok {
+		return json.NewEncoder(writer).Encode(map[string]string{"status": "rpc_unavailable"})
+	}
+	response, err := githubClient.GitHubCredentials(request.Context(), &tunnel.Empty{})
+	if err != nil {
+		kind := "rpc_error"
+		switch grpcstatus.Code(err) {
+		case codes.PermissionDenied:
+			kind = "rpc_denied"
+		case codes.DeadlineExceeded:
+			kind = "rpc_timeout"
+		case codes.Canceled:
+			kind = "rpc_cancelled"
+		}
+		return json.NewEncoder(writer).Encode(map[string]string{"status": kind})
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("Cache-Control", "no-store")
+	_, err = io.WriteString(writer, response.Message)
+	return err
 }
 
 const fetchOwnerTimeout = 2 * time.Second
