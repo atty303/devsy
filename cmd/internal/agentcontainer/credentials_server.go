@@ -128,11 +128,7 @@ func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) (runErr erro
 	defer func() { _ = ln.Close() }()
 
 	cmd.maybeForwardPorts(runCtx, tunnelClient)
-	if cmd.ConfigureGitHubHelper {
-		if err := ghcredentials.Install(port); err != nil {
-			log.Debug("GitHub CLI wrapper installation unavailable")
-		}
-	}
+	cmd.configureGitHubHelper(port)
 
 	if err := cmd.configureDockerHelper(port); err != nil {
 		return err
@@ -162,6 +158,15 @@ func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) (runErr erro
 	}}
 
 	return credentials.RunCredentialsServerWithListener(runCtx, ln, tunnelClient, cmd.User)
+}
+
+func (cmd *CredentialsServerCmd) configureGitHubHelper(port int) {
+	if !cmd.ConfigureGitHubHelper {
+		return
+	}
+	if err := ghcredentials.Install(port); err != nil {
+		log.Debug("GitHub CLI wrapper installation unavailable")
+	}
 }
 
 func connectCredentialsTunnel(
