@@ -77,11 +77,6 @@ func collectHostAccounts(ctx context.Context, binary string, hosts *yaml.Node) H
 	return result
 }
 
-func tokenForHost(ctx context.Context, binary, host string, env []string) string {
-	token, _ := resolveToken(ctx, binary, host, env)
-	return token
-}
-
 func resolveToken(ctx context.Context, binary, host string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
