@@ -6,23 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/devsy-org/devsy/pkg/log"
 )
 
-// HostResult separates an unavailable authentication source from a broken
-// transport. Only Accounts contains secrets; Status and Decisions are safe for
-// the local diagnostic recorder.
 type HostResult struct {
-	Accounts   []Account      `json:"accounts"`
-	Status     string         `json:"status"`
-	Decisions  []hostDecision `json:"decisions,omitempty"`
-	Context    HostContext    `json:"context"`
-	DurationMS int64          `json:"duration_ms"`
-}
-
-type HostContext struct {
-	Binary    string            `json:"binary,omitempty"`
-	ConfigDir string            `json:"config_dir,omitempty"`
-	Inputs    map[string]string `json:"inputs,omitempty"`
+	Accounts []Account `json:"accounts"`
+	Status   string    `json:"status"`
 }
 
 type boundaryError struct {
@@ -83,7 +73,11 @@ func describeError(name string, err error) (string, string) {
 	return name, errorKind(err)
 }
 
-type processResult struct {
-	Code, Signal int
-	ErrorType    string
+func logFailure(message, operation string, err error, saving bool) {
+	operation, kind := describeError(operation, err)
+	if saving {
+		log.Errorw(message, "operation", operation, "error_type", kind)
+	} else {
+		log.Warnw(message, "operation", operation, "error_type", kind)
+	}
 }

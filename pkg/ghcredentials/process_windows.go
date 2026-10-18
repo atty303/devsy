@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/devsy-org/devsy/pkg/log"
 	"github.com/gofrs/flock"
 )
 
@@ -24,15 +25,16 @@ func tryOwner(path string) (*ownerLock, bool, error) {
 
 func (l *ownerLock) Close() error { return l.lock.Close() }
 
-func runGH(binary string, args, env []string, _ *os.File) processResult {
+func runGH(binary string, args, env []string, _ *os.File) int {
 	//nolint:gosec // The user chose this executable and these unchanged arguments.
 	cmd := exec.Command(binary, args...)
 	cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = env, os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		if cmd.ProcessState != nil {
-			return processResult{Code: cmd.ProcessState.ExitCode(), ErrorType: "exit_nonzero"}
+			return cmd.ProcessState.ExitCode()
 		}
-		return processResult{Code: 126, ErrorType: errorKind(err)}
+		log.Errorw("gh relay: executable unavailable", "error_type", errorKind(err))
+		return 126
 	}
-	return processResult{}
+	return 0
 }

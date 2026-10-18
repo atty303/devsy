@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/devsy-org/devsy/pkg/log"
 )
 
 const (
@@ -21,12 +23,15 @@ const (
 
 func Run(args []string) int {
 	if len(args) == 0 {
+		log.Error("gh relay: wrapper path missing")
 		return 127
 	}
 	binary, err := realBinary(args[0])
 	if err != nil {
+		log.Errorw("gh relay: executable unavailable", "error_type", errorKind(err))
 		return 127
 	}
+	log.Debugw("gh relay: executable selected", "binary", binary)
 	env := os.Environ()
 	if _, explicit := os.LookupEnv("GH_PATH"); !explicit {
 		env = replaceEnv(env, "GH_PATH", wrapperPath)
@@ -35,16 +40,15 @@ func Run(args []string) int {
 	// A local lookup may re-enter through another dispatcher. Keep forwarding
 	// disabled throughout that process tree, even if it changes GH_CONFIG_DIR.
 	if os.Getenv(authProbeEnv) == "1" || (active != "" && active == os.Getenv("GH_CONFIG_DIR")) {
-		return runGH(binary, args[1:], env, nil).Code
+		return runGH(binary, args[1:], env, nil)
 	}
-	inv := &invocation{binary: binary, args: args[1:], env: env, diag: beginDiagnostic(binary)}
-	defer inv.diag.finish()
+	inv := &invocation{binary: binary, args: args[1:], env: env}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	inv.recover(ctx)
 	session := inv.prepare(ctx)
 	if session == nil {
-		return inv.diag.run(binary, inv.args, env, nil)
+		return runGH(binary, inv.args, env, nil)
 	}
 	return inv.withSession(session)
 }
@@ -52,83 +56,71 @@ func Run(args []string) int {
 type invocation struct {
 	binary    string
 	args, env []string
-	diag      *diagnostic
 }
 
 func (inv *invocation) recover(ctx context.Context) {
-	started := time.Now()
 	root, err := sessionRoot()
 	if err != nil {
-		inv.diag.observe("session.recover", started, err)
+		logFailure("gh relay: recovery unavailable", "session.recover", err, false)
 		return
 	}
 	l, err := lock(ctx, filepath.Join(root, "sessions.lock"))
 	if err != nil {
-		inv.diag.observe("session.recover_lock", started, err)
+		logFailure("gh relay: recovery unavailable", "session.recover_lock", err, false)
 		return
 	}
 	defer func() { _ = l.Close() }()
-	inv.diag.Recovery = recoverSessions(ctx, root, inv.diag.path != "")
-	inv.diag.observe("session.recover", started, nil)
+	recoverSessions(ctx, root)
 }
 
 func (inv *invocation) prepare(ctx context.Context) *session {
-	started := time.Now()
 	result, err := fetch(ctx)
-	inv.diag.observe("relay.fetch", started, err)
-	inv.diag.HostStatus = result.Status
-	inv.diag.HostContext = result.Context
-	inv.diag.hostResult(result)
-	inv.diag.HostDecisions = result.Decisions
-	if err != nil || len(result.Accounts) == 0 {
-		inv.diag.Stage = "relay_unavailable"
+	if err != nil {
+		logFailure("gh relay: forwarding unavailable", "relay.fetch", err, false)
+		return nil
+	}
+	log.Debugw("gh relay: host authentication", "status", result.Status)
+	switch result.Status {
+	case "available", "gh_not_found", hostNoActiveAccounts, "rpc_denied":
+	default:
+		log.Warnw(
+			"gh relay: forwarding unavailable",
+			"operation",
+			"host.resolve",
+			"status",
+			result.Status,
+		)
+	}
+	if len(result.Accounts) == 0 {
 		return nil
 	}
 	original, err := ConfigDir()
 	if err != nil {
-		inv.diag.Stage = "config_unavailable"
+		logFailure("gh relay: forwarding unavailable", "config.path", err, false)
 		return nil
 	}
-	inv.diag.ConfigDir = original
-	started = time.Now()
 	s, err := startSession(ctx, original, result.Accounts)
-	inv.diag.observe("session.snapshot", started, err)
 	if err != nil {
-		inv.diag.Stage = "snapshot_failed"
+		logFailure("gh relay: forwarding unavailable", "session.snapshot", err, false)
 		return nil
 	}
-	started = time.Now()
 	if err := s.inject(ctx, inv.binary, inv.env); err != nil {
-		inv.diag.observe("config.overlay", started, err)
+		logFailure("gh relay: forwarding unavailable", "config.overlay", err, false)
 		_ = os.RemoveAll(s.dir)
 		_ = s.lock.Close()
-		inv.diag.Stage = "overlay_failed"
 		return nil
 	}
-	inv.diag.observe("config.overlay", started, nil)
-	inv.diag.Hosts = s.decisions
 	return s
 }
 
 func (inv *invocation) withSession(s *session) int {
-	inv.diag.Stage = "overlay_ready"
-	inv.diag.save(false)
 	env := replaceEnv(inv.env, "GH_CONFIG_DIR", s.work())
 	env = replaceEnv(env, sessionEnv, s.work())
-	code := inv.diag.run(inv.binary, inv.args, env, s.lock.file)
+	code := runGH(inv.binary, inv.args, env, s.lock.file)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	started := time.Now()
-	if inv.diag.path != "" {
-		s.writeback = &writebackSummary{}
-	}
-	err := s.finish(ctx)
-	inv.diag.Writeback = s.writeback
-	inv.diag.observe("config.writeback", started, err)
-	if err != nil {
-		inv.diag.Stage = "writeback_pending"
-	} else {
-		inv.diag.Stage = "written_back"
+	if err := s.finish(ctx); err != nil {
+		logFailure("gh relay: configuration writeback pending", "config.writeback", err, true)
 	}
 	return code
 }

@@ -143,7 +143,14 @@ func prepareFixture(t *testing.T, ctx context.Context, dir string) string {
 	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, "build: %s", out)
-	sshBuild := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(dir, "ssh-client"), filepath.Join(dir, "ssh.go"))
+	sshBuild := exec.CommandContext(
+		ctx,
+		"go",
+		"build",
+		"-o",
+		filepath.Join(dir, "ssh-client"),
+		filepath.Join(dir, "ssh.go"),
+	)
 	sshBuild.Dir, sshBuild.Env = repo, build.Env
 	sshOut, err := sshBuild.CombinedOutput()
 	require.NoError(t, err, "build ssh fixture: %s", sshOut)
@@ -307,7 +314,11 @@ func verifyRelayFallback(t *testing.T, ctx context.Context, name string, stop co
 			"GH_CONFIG_DIR=/fixture/fallback-gh gh config set editor nano && "+
 			"GH_CONFIG_DIR=/fixture/fallback-gh gh config get editor",
 	)
-	plain, err := fallback.CombinedOutput()
+	var stderr bytes.Buffer
+	fallback.Stderr = &stderr
+	plain, err := fallback.Output()
 	require.NoError(t, err, "fallback: %s", plain)
 	require.Equal(t, "pending\nnano\n", string(plain))
+	require.Contains(t, stderr.String(), "gh relay: forwarding unavailable")
+	require.Contains(t, stderr.String(), "connection_refused")
 }
