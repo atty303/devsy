@@ -3,7 +3,6 @@ package daemonclient
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 
 	"charm.land/huh/v2"
@@ -12,9 +11,9 @@ import (
 	"github.com/devsy-org/devsy/cmd/pro/provider/list"
 	"github.com/devsy-org/devsy/pkg/config"
 	"github.com/devsy-org/devsy/pkg/encoding"
-	"github.com/devsy-org/devsy/pkg/log"
 	"github.com/devsy-org/devsy/pkg/platform"
 	platformclient "github.com/devsy-org/devsy/pkg/platform/client"
+	"github.com/devsy-org/devsy/pkg/platform/form"
 	"github.com/devsy-org/devsy/pkg/platform/parameters"
 	"github.com/devsy-org/devsy/pkg/platform/project"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -66,14 +65,14 @@ type projectClusterTemplateSelection struct {
 func selectProjectClusterTemplate(
 	ctx, formCtx context.Context,
 	baseClient platformclient.Client,
-	cancelForm CancelFunc,
+	cancelForm form.CancelFunc,
 ) (projectClusterTemplateSelection, error) {
 	var selectedCluster *managementv1.Cluster
 	var selectedProject *managementv1.Project
 	var selectedTemplate *managementv1.DevsyWorkspaceTemplate
 	selectedTemplateVersion := ""
 
-	options, err := projectOptions(ctx, baseClient)
+	options, err := form.ProjectOptions(ctx, baseClient)
 	if err != nil {
 		return projectClusterTemplateSelection{}, err
 	}
@@ -87,20 +86,20 @@ func selectProjectClusterTemplate(
 			huh.NewSelect[*managementv1.Cluster]().
 				Title("Cluster").
 				OptionsFunc(func() []huh.Option[*managementv1.Cluster] {
-					return getClusterOptions(ctx, baseClient, selectedProject, cancelForm)
+					return form.ClusterOptions(ctx, baseClient, selectedProject, cancelForm)
 				}, &selectedProject).
 				Value(&selectedCluster).
 				WithHeight(5),
 			huh.NewSelect[*managementv1.DevsyWorkspaceTemplate]().
 				Title("Template").
 				OptionsFunc(func() []huh.Option[*managementv1.DevsyWorkspaceTemplate] {
-					return getTemplateOptions(ctx, baseClient, selectedProject, cancelForm)
+					return form.TemplateOptions(ctx, baseClient, selectedProject, cancelForm)
 				}, &selectedProject).
 				Value(&selectedTemplate),
 			huh.NewSelect[string]().
 				Title("Template Version").
 				OptionsFunc(func() []huh.Option[string] {
-					return getTemplateVersionOptions(selectedTemplate)
+					return form.TemplateVersionOptions(selectedTemplate)
 				}, &selectedTemplate).
 				Value(&selectedTemplateVersion).
 				WithHeight(8),
@@ -222,7 +221,7 @@ func updateInstanceInteractive(
 			huh.NewSelect[string]().
 				Title("Template Version").
 				OptionsFunc(func() []huh.Option[string] {
-					return getTemplateVersionOptions(selectedTemplate)
+					return form.TemplateVersionOptions(selectedTemplate)
 				}, &selectedTemplate).
 				Value(&selectedTemplateVersion).
 				WithHeight(8),
@@ -253,8 +252,8 @@ func updateInstanceInteractive(
 func buildTemplateOptions(
 	templates []managementv1.DevsyWorkspaceTemplate,
 	instance *managementv1.DevsyWorkspaceInstance,
-) ([]TemplateOption, *managementv1.DevsyWorkspaceTemplate) {
-	templateOptions := []TemplateOption{}
+) ([]form.TemplateOption, *managementv1.DevsyWorkspaceTemplate) {
+	templateOptions := []form.TemplateOption{}
 	var selectedTemplate *managementv1.DevsyWorkspaceTemplate
 	for _, template := range templates {
 		t := &template
@@ -403,122 +402,7 @@ func applyInstanceChanges(
 	return newInstance
 }
 
-type (
-	ProjectOption  = huh.Option[*managementv1.Project]
-	TemplateOption = huh.Option[*managementv1.DevsyWorkspaceTemplate]
-	CancelFunc     = func()
-)
-
 const paramTypeBoolean = "boolean"
-
-var latestTemplateVersion = huh.Option[string]{
-	Key:   "latest",
-	Value: "",
-}
-
-func projectOptions(ctx context.Context, client platformclient.Client) ([]ProjectOption, error) {
-	projects, err := list.Projects(ctx, client)
-	if err != nil {
-		return nil, err
-	}
-	projectOptions := []ProjectOption{}
-	for _, project := range projects.Items {
-		p := &project
-		projectOptions = append(projectOptions, ProjectOption{
-			Key:   platform.DisplayName(project.GetName(), project.Spec.DisplayName),
-			Value: p,
-		})
-	}
-
-	return projectOptions, nil
-}
-
-func getClusterOptions(
-	ctx context.Context,
-	client platformclient.Client,
-	project *managementv1.Project,
-	cancel CancelFunc,
-) []huh.Option[*managementv1.Cluster] {
-	opts := []huh.Option[*managementv1.Cluster]{}
-	if project == nil {
-		return opts
-	}
-
-	clusters, err := list.Clusters(ctx, client, project.GetName())
-	if err != nil {
-		log.Error(err)
-		cancel()
-
-		return nil
-	}
-	for _, cluster := range clusters.Clusters {
-		r := &cluster
-		opts = append(opts, huh.Option[*managementv1.Cluster]{
-			Key:   platform.DisplayName(cluster.GetName(), cluster.Spec.DisplayName),
-			Value: r,
-		})
-	}
-
-	return opts
-}
-
-func getTemplateOptions(
-	ctx context.Context,
-	client platformclient.Client,
-	project *managementv1.Project,
-	cancel CancelFunc,
-) []huh.Option[*managementv1.DevsyWorkspaceTemplate] {
-	opts := []huh.Option[*managementv1.DevsyWorkspaceTemplate]{}
-	if project == nil {
-		return opts
-	}
-
-	templates, err := list.Templates(ctx, client, project.GetName())
-	if err != nil {
-		log.Error(err)
-		cancel()
-
-		return nil
-	}
-
-	var defaultOpt huh.Option[*managementv1.DevsyWorkspaceTemplate]
-	for _, template := range templates.DevsyWorkspaceTemplates {
-		t := &template
-		opt := huh.Option[*managementv1.DevsyWorkspaceTemplate]{
-			Key:   platform.DisplayName(template.GetName(), template.Spec.DisplayName),
-			Value: t,
-		}
-		if t.GetName() == templates.DefaultDevsyWorkspaceTemplate {
-			defaultOpt = opt
-			continue
-		}
-		opts = append(opts, opt)
-	}
-	if defaultOpt.Key != "" {
-		// make sure the default template is the first
-		opts = slices.Insert(opts, 0, defaultOpt)
-	}
-
-	return opts
-}
-
-func getTemplateVersionOptions(
-	template *managementv1.DevsyWorkspaceTemplate,
-) []huh.Option[string] {
-	opts := []huh.Option[string]{latestTemplateVersion}
-	if template == nil {
-		return opts
-	}
-
-	for _, version := range template.GetVersions() {
-		opts = append(opts, huh.Option[string]{
-			Key:   version.GetVersion(),
-			Value: version.GetVersion(),
-		})
-	}
-
-	return opts
-}
 
 type FieldParameter struct {
 	storagev1.AppParameter

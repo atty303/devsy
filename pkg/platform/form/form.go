@@ -73,7 +73,7 @@ func runCreateSelectionForm(
 	var selectedProject *managementv1.Project
 	var selectedTemplate *managementv1.DevsyWorkspaceTemplate
 	selectedTemplateVersion := ""
-	projectOptions, err := projectOptions(ctx, baseClient)
+	projectOptions, err := ProjectOptions(ctx, baseClient)
 	if err != nil {
 		return createSelection{}, err
 	}
@@ -86,20 +86,20 @@ func runCreateSelectionForm(
 			huh.NewSelect[*managementv1.Cluster]().
 				Title("Cluster").
 				OptionsFunc(func() []huh.Option[*managementv1.Cluster] {
-					return getClusterOptions(ctx, baseClient, selectedProject, cancelForm)
+					return ClusterOptions(ctx, baseClient, selectedProject, cancelForm)
 				}, &selectedProject).
 				Value(&selectedCluster).
 				WithHeight(5),
 			huh.NewSelect[*managementv1.DevsyWorkspaceTemplate]().
 				Title("Template").
 				OptionsFunc(func() []huh.Option[*managementv1.DevsyWorkspaceTemplate] {
-					return getTemplateOptions(ctx, baseClient, selectedProject, cancelForm)
+					return TemplateOptions(ctx, baseClient, selectedProject, cancelForm)
 				}, &selectedProject).
 				Value(&selectedTemplate),
 			huh.NewSelect[string]().
 				Title("Template Version").
 				OptionsFunc(func() []huh.Option[string] {
-					return getTemplateVersionOptions(selectedTemplate)
+					return TemplateVersionOptions(selectedTemplate)
 				}, &selectedTemplate).
 				Value(&selectedTemplateVersion).
 				WithHeight(8),
@@ -268,7 +268,7 @@ func selectUpdateTemplate(
 			huh.NewSelect[string]().
 				Title("Template Version").
 				OptionsFunc(func() []huh.Option[string] {
-					return getTemplateVersionOptions(selectedTemplate)
+					return TemplateVersionOptions(selectedTemplate)
 				}, &selectedTemplate).
 				Value(&selectedTemplateVersion).
 				WithHeight(8),
@@ -432,7 +432,8 @@ var latestTemplateVersion = huh.Option[string]{
 	Value: "",
 }
 
-func projectOptions(ctx context.Context, client client.Client) ([]ProjectOption, error) {
+// ProjectOptions lists projects as huh options.
+func ProjectOptions(ctx context.Context, client client.Client) ([]ProjectOption, error) {
 	projects, err := list.Projects(ctx, client)
 	if err != nil {
 		return nil, err
@@ -449,7 +450,8 @@ func projectOptions(ctx context.Context, client client.Client) ([]ProjectOption,
 	return projectOptions, nil
 }
 
-func getClusterOptions(
+// ClusterOptions lists clusters of a project as huh options.
+func ClusterOptions(
 	ctx context.Context,
 	client client.Client,
 	project *managementv1.Project,
@@ -478,7 +480,8 @@ func getClusterOptions(
 	return opts
 }
 
-func getTemplateOptions(
+// TemplateOptions lists templates of a project as huh options, default first.
+func TemplateOptions(
 	ctx context.Context,
 	client client.Client,
 	project *managementv1.Project,
@@ -518,7 +521,8 @@ func getTemplateOptions(
 	return opts
 }
 
-func getTemplateVersionOptions(
+// TemplateVersionOptions lists template versions, latest first.
+func TemplateVersionOptions(
 	template *managementv1.DevsyWorkspaceTemplate,
 ) []huh.Option[string] {
 	opts := []huh.Option[string]{latestTemplateVersion}
