@@ -113,6 +113,44 @@ def check():
         'enterprise.two.test:\n    git_protocol: https\n    user: dotfiles-user\n    oauth_token:\n    users:\n        dotfiles-user:\n            oauth_token:\n        other-user:\n'
     )
     (original / 'hosts.yml').write_text(registrations)
+
+    # A third-party dispatcher can return to Devsy after resolving the real gh.
+    # Exercise both entries without depending on any particular tool manager.
+    dispatcher = ROOT / 'dispatcher'
+    dispatcher.mkdir()
+    shim = dispatcher / 'gh'
+    shim.write_text('#!/bin/sh\nexport PATH=/usr/local/bin:/usr/bin:/bin\nif [ -n "$GH_TEST_CONFIG_OVERRIDE" ]; then export GH_CONFIG_DIR="$GH_TEST_CONFIG_OVERRIDE"; fi\nexec /usr/local/share/devsy/gh/bin/gh "$@"\n')
+    shim.chmod(0o755)
+    def nested_gh(*args, token=None, env=None):
+        e = dict(os.environ, PATH=str(dispatcher) + ':/usr/local/bin:/usr/bin:/bin')
+        if env:
+            e.update(env)
+        return subprocess.run(['/usr/local/share/devsy/gh/bin/gh', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+    def nested_api(host, expected='host-user', **kw):
+        r = nested_gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
+        return r.returncode == 0 and r.stdout.strip() == expected
+    verify('dispatcher re-entry cannot supply forwarded authentication to local lookup', all(nested_api(h) for h in HOSTS))
+    verify('dispatcher re-entry preserves real auth status', nested_gh('auth', 'status').returncode == 0)
+    verify('dispatcher re-entry records local-only lookup', all(h['source'] == 'forwarded' and h['token_probe_mode'] == 'local_only' for h in last_diagnostic()['hosts']))
+    redirected = ROOT / 'redirected-gh'
+    redirected.mkdir()
+    (redirected / 'hosts.yml').write_text(registrations)
+    verify('local-only lookup survives dispatcher config changes', nested_api(HOSTS[0], env={'GH_TEST_CONFIG_OVERRIDE': str(redirected)}))
+    verify('nested lookup leaves original preferences unchanged', saved() == registrations and no_forwarded_saved())
+    verify('nested lookup retains explicit invalid environment authentication', not nested_api(HOSTS[0], env={'GH_TOKEN': secrets[HOSTS[0]]['invalid']}))
+    r = nested_gh('auth', 'login', '--hostname', HOSTS[0], '--with-token', '--insecure-storage', token=secrets[HOSTS[0]]['local'])
+    verify('nested local login retains precedence', r.returncode == 0 and nested_api(HOSTS[0], 'local-user'))
+    local_nested = saved()
+    (original / 'hosts.yml').write_text(local_nested.replace(secrets[HOSTS[0]]['local'], secrets[HOSTS[0]]['invalid']))
+    verify('nested invalid local token never falls back', not nested_api(HOSTS[0]))
+    (original / 'hosts.yml').write_text(local_nested)
+    verify('nested local logout restores forwarding', nested_gh('auth', 'logout', '--hostname', HOSTS[0], '--user', 'local-user').returncode == 0 and nested_api(HOSTS[0]))
+    verify('nested alias preparation', gh('alias', 'set', 'probe-guard', '!test -z "$DEVSY_GH_AUTH_PROBE" && gh api user --jq .login').returncode == 0)
+    r = nested_gh('probe-guard')
+    verify('local-only marker does not leak into aliases or their children', r.returncode == 0 and r.stdout.strip() == 'host-user')
+    verify('nested alias removed', gh('alias', 'delete', 'probe-guard').returncode == 0)
+    (original / 'hosts.yml').write_text(registrations)
+
     verify('tokenless registrations use host active accounts', all(api(h) for h in HOSTS))
     verify('real auth status ignores hidden tokenless registrations', gh('auth', 'status').returncode == 0)
     verify('unchanged invocation preserves exact dotfiles registrations', saved() == registrations and no_forwarded_saved())
@@ -179,12 +217,14 @@ def check():
     r = gh('auth', 'login', '--hostname', HOSTS[1], '--with-token', token=secrets[HOSTS[1]]['local'])
     verify('keyring login succeeds without plaintext token', r.returncode == 0 and secrets[HOSTS[1]]['local'] not in saved() and api(HOSTS[1], 'local-user'))
     verify('existing keyring credential excluded from forwarding', last_diagnostic()['hosts'][1]['source'] == 'keyring')
+    verify('nested lookup preserves keyring authentication', nested_api(HOSTS[1], 'local-user') and last_diagnostic()['hosts'][1]['source'] == 'keyring')
     verify('unavailable keyring backend follows gh no-token result', api(HOSTS[1], env={'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/nonexistent'}) and last_diagnostic()['hosts'][1]['source'] == 'forwarded')
     verify('unavailable backend leaves local keyring intact', api(HOSTS[1], 'local-user'))
     revoked = ROOT / 'revoke-local'
     revoked.touch()
     try:
         verify('expired keyring credential never falls back', not api(HOSTS[1]) and last_diagnostic()['hosts'][1]['source'] == 'keyring')
+        verify('nested expired keyring credential never falls back', not nested_api(HOSTS[1]) and last_diagnostic()['hosts'][1]['source'] == 'keyring')
     finally:
         revoked.unlink()
     forbidden = ROOT / 'forbid-local'
@@ -192,6 +232,8 @@ def check():
     try:
         r = gh('api', 'repos/fixture/private', '--hostname', HOSTS[1])
         verify('insufficient keyring permission never falls back', r.returncode != 0 and '403' in r.stderr and last_diagnostic()['hosts'][1]['source'] == 'keyring')
+        r = nested_gh('api', 'repos/fixture/private', '--hostname', HOSTS[1])
+        verify('nested insufficient keyring permission never falls back', r.returncode != 0 and '403' in r.stderr and last_diagnostic()['hosts'][1]['source'] == 'keyring')
     finally:
         forbidden.unlink()
     r = gh('auth', 'status', '--hostname', HOSTS[1])

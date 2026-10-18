@@ -271,3 +271,25 @@ func TestTokenLookupTimeoutDoesNotAllowForwarding(t *testing.T) {
 	require.Equal(t, "timeout", decision.Probe)
 	require.Nil(t, get(hosts, a.Host))
 }
+
+func TestTokenLookupIsLocalOnlyAndChildScoped(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("DEVSY_GH_AUTH_PROBE", "parent-value")
+	writeTestFile(t, filepath.Join(root, "auth"), `#!/bin/sh
+test "$DEVSY_GH_AUTH_PROBE" = 1 || exit 42
+test "$DEVSY_GH_SESSION" = existing-session || exit 43
+printf '%s' "$GH_TOKEN"
+`)
+	env := []string{
+		testPathEnv,
+		"DEVSY_GH_AUTH_PROBE=0",
+		"DEVSY_GH_SESSION=existing-session",
+		"GH_TOKEN=dummy-local-value",
+	}
+	token, err := resolveToken(context.Background(), "/bin/sh", "github.example", env)
+	require.NoError(t, err)
+	require.True(t, "GH_TOKEN="+token == env[3], "local environment authentication changed")
+	require.Equal(t, "DEVSY_GH_AUTH_PROBE=0", env[1])
+	require.Equal(t, "parent-value", os.Getenv("DEVSY_GH_AUTH_PROBE"))
+}

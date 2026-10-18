@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-const sessionEnv = "DEVSY_GH_SESSION"
+const (
+	sessionEnv   = "DEVSY_GH_SESSION"
+	authProbeEnv = "DEVSY_GH_AUTH_PROBE"
+)
 
 // Run is the wrapper entry point. args starts with the wrapper's path, followed
 // by untouched gh arguments. It bypasses Devsy's CLI/env/log initialization.
@@ -27,7 +30,10 @@ func Run(args []string) int {
 		return 127
 	}
 	env := os.Environ()
-	if active := os.Getenv(sessionEnv); active != "" && active == os.Getenv("GH_CONFIG_DIR") {
+	active := os.Getenv(sessionEnv)
+	// A local lookup may re-enter through another dispatcher. Keep forwarding
+	// disabled throughout that process tree, even if it changes GH_CONFIG_DIR.
+	if os.Getenv(authProbeEnv) == "1" || (active != "" && active == os.Getenv("GH_CONFIG_DIR")) {
 		return runGH(binary, args[1:], env, nil).Code
 	}
 	inv := &invocation{binary: binary, args: args[1:], env: env, diag: beginDiagnostic(binary)}

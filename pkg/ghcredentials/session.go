@@ -465,6 +465,7 @@ func (a Account) inject(
 		decision.Source = source
 		return decision
 	}
+	decision.ProbeMode = "local_only"
 	token, err := resolveToken(ctx, binary, a.Host, env)
 	decision.Probe = "empty"
 	if err != nil {
