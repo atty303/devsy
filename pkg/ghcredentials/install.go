@@ -12,8 +12,6 @@ import (
 
 const WrapperDir = "/usr/local/share/devsy/gh/bin"
 
-// Install owns only its private executable and a system profile fragment. The
-// user's gh binaries, configuration, and shell dotfiles are never replaced.
 func Install(port int) error {
 	binary, err := os.Executable()
 	if err != nil {

@@ -113,8 +113,6 @@ func (d *diagnostic) finish() {
 	d.Finished = time.Now()
 	d.save(true)
 	entries, _ := os.ReadDir(filepath.Dir(d.path))
-	// Fixed-size records and a count bound cap local disk usage. Incomplete
-	// records identify killed runs; no remote diagnostic export exists.
 	sort.Slice(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
 		successA := diagnosticSuccess(filepath.Join(filepath.Dir(d.path), a.Name()))

@@ -1,5 +1,3 @@
-// Package ghcredentials supplies temporary GitHub CLI authentication without
-// putting relayed credentials in the user's configuration.
 package ghcredentials
 
 import (
