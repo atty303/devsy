@@ -9,18 +9,11 @@ import (
 	"github.com/devsy-org/devsy/pkg/devcontainer/config"
 	"github.com/devsy-org/devsy/pkg/driver"
 	"github.com/devsy-org/devsy/pkg/log"
-	"github.com/docker/cli/opts"
 )
-
-type tmpfsMountOptions struct {
-	size     opts.MemBytes
-	mode     uint64
-	readOnly bool
-}
 
 // buildRunArgs assembles `container run` args, emitting only flags Apple supports
 // (Docker/Podman-only flags like --security-opt/--gpus/--userns are omitted).
-func (d *appleDriver) buildRunArgs(params *driver.RunImageDevContainerParams) ([]string, error) {
+func (d *appleDriver) buildRunArgs(params *driver.RunImageDevContainerParams) []string {
 	args := []string{"run", "-d"}
 
 	if d.Rosetta {
@@ -29,19 +22,12 @@ func (d *appleDriver) buildRunArgs(params *driver.RunImageDevContainerParams) ([
 
 	warnUnsupportedGPU(params.ParsedConfig)
 	args = d.addPorts(args, params.ParsedConfig)
-	var err error
-	args, err = d.addWorkspaceMount(args, params.Options)
-	if err != nil {
-		return nil, err
-	}
+	args = d.addWorkspaceMount(args, params.Options)
 	args = addUser(args, params.Options)
 	args = addEnv(args, params.Options)
 	args = addInit(args, params.Options)
 	args = addCapabilities(args, params.Options)
-	args, err = addMounts(args, params.Options)
-	if err != nil {
-		return nil, err
-	}
+	args = addMounts(args, params.Options)
 	args = d.addLabels(args, params.WorkspaceID, params.Options)
 	args = append(args, params.ParsedConfig.RunArgs...)
 	args = addPlatform(args, params.ParsedConfig, params.Options)
@@ -49,7 +35,7 @@ func (d *appleDriver) buildRunArgs(params *driver.RunImageDevContainerParams) ([
 
 	args = append(args, params.Options.Image)
 	args = append(args, params.Options.Cmd...)
-	return args, nil
+	return args
 }
 
 func (d *appleDriver) addPorts(args []string, parsedConfig *config.DevContainerConfig) []string {
@@ -63,14 +49,11 @@ func (d *appleDriver) addPorts(args []string, parsedConfig *config.DevContainerC
 	return args
 }
 
-func (d *appleDriver) addWorkspaceMount(
-	args []string,
-	options *driver.RunOptions,
-) ([]string, error) {
-	if options.WorkspaceMount == nil {
-		return args, nil
+func (d *appleDriver) addWorkspaceMount(args []string, options *driver.RunOptions) []string {
+	if options.WorkspaceMount != nil {
+		args = appendMount(args, options.WorkspaceMount)
 	}
-	return appendMount(args, options.WorkspaceMount)
+	return args
 }
 
 func addUser(args []string, options *driver.RunOptions) []string {
@@ -101,7 +84,7 @@ func addCapabilities(args []string, options *driver.RunOptions) []string {
 	return args
 }
 
-func addMounts(args []string, options *driver.RunOptions) ([]string, error) {
+func addMounts(args []string, options *driver.RunOptions) []string {
 	for _, mount := range options.Mounts {
 		if mount.Type == "bind" && mount.Source != "" {
 			if _, err := os.Stat(mount.Source); os.IsNotExist(err) {
@@ -109,83 +92,30 @@ func addMounts(args []string, options *driver.RunOptions) ([]string, error) {
 				continue
 			}
 		}
-		var err error
-		args, err = appendMount(args, mount)
-		if err != nil {
-			return nil, err
-		}
+		args = appendMount(args, mount)
 	}
-	return args, nil
+	return args
 }
 
-func appendMount(args []string, mount *config.Mount) ([]string, error) {
-	if mount.Type != driver.MountTypeTmpfs {
-		return append(args, "--mount", cleanMount(mount.String())), nil
-	}
-	if mount.Source != "" {
-		return nil, fmt.Errorf("apple tmpfs mount cannot specify a source")
-	}
-	if !strings.HasPrefix(mount.Target, "/") || strings.Contains(mount.Target, ":") {
-		return nil, fmt.Errorf(
-			"apple tmpfs mount requires an absolute target without a colon: %q",
-			mount.Target,
-		)
-	}
-	opts, err := tmpfsOptions(mount)
-	if err != nil {
-		return nil, err
-	}
-	spec := mount.Target
-	if len(opts) > 0 {
-		spec += ":" + strings.Join(opts, ",")
-	}
-	return append(args, "--tmpfs", spec), nil
-}
-
-func tmpfsOptions(mount *config.Mount) ([]string, error) {
-	var parsed tmpfsMountOptions
-	for _, option := range mount.Other {
-		if err := parsed.set(option); err != nil {
-			return nil, fmt.Errorf("invalid apple tmpfs mount option: %w", err)
+func appendMount(args []string, mount *config.Mount) []string {
+	translated := *mount
+	if mount.Type == driver.MountTypeTmpfs {
+		translated.Other = make([]string, len(mount.Other))
+		for i, option := range mount.Other {
+			translated.Other[i] = nativeTmpfsOption(option)
 		}
 	}
-	// Apple's --mount size parser rounds through MiB; --tmpfs preserves bytes.
-	// Docker treats zero size/mode as unset, unlike Linux's explicit zero options.
-	options := []string{}
-	if parsed.size.Value() != 0 {
-		options = append(options, "size="+strconv.FormatInt(parsed.size.Value(), 10))
-	}
-	if parsed.mode != 0 {
-		options = append(options, "mode="+strconv.FormatUint(parsed.mode, 8))
-	}
-	if parsed.readOnly {
-		options = append(options, "ro")
-	}
-	return options, nil
+	return append(args, "--mount", cleanMount(translated.String()))
 }
 
-func (o *tmpfsMountOptions) set(option string) error {
-	key, value, hasValue := strings.Cut(strings.TrimSpace(option), "=")
-	value = strings.TrimSpace(value)
-	switch strings.ToLower(key) {
-	case "tmpfs-size":
-		return o.size.Set(value)
-	case "tmpfs-mode":
-		var err error
-		o.mode, err = strconv.ParseUint(value, 8, 32)
-		return err
-	case "readonly", "ro":
-		if !hasValue {
-			value = "true"
-		}
-		var err error
-		o.readOnly, err = strconv.ParseBool(value)
-		return err
-	case "consistency", "bind-create-src":
-		return nil
-	default:
-		return fmt.Errorf("unsupported option %q", key)
+func nativeTmpfsOption(option string) string {
+	if value, ok := strings.CutPrefix(option, "tmpfs-mode="); ok {
+		return "mode=" + value
 	}
+	if value, ok := strings.CutPrefix(option, "tmpfs-size="); ok {
+		return "size=" + value
+	}
+	return option
 }
 
 func (d *appleDriver) addLabels(
