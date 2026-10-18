@@ -97,6 +97,11 @@ func addMounts(args []string, options *driver.RunOptions) []string {
 	return args
 }
 
+// appendMount formats a mount for `container run --mount`. Docker spells the
+// tmpfs permission option "tmpfs-mode"; Apple's CLI rejects it and expects
+// "mode". "tmpfs-size" is deliberately not translated: container 1.5.0 rounds
+// sub-MiB sizes to zero (an uncapped mount), so the Docker spelling is left
+// as is and the CLI refuses it instead of silently dropping the cap.
 func appendMount(args []string, mount *config.Mount) []string {
 	translated := *mount
 	if mount.Type == driver.MountTypeTmpfs {
@@ -111,9 +116,6 @@ func appendMount(args []string, mount *config.Mount) []string {
 func nativeTmpfsOption(option string) string {
 	if value, ok := strings.CutPrefix(option, "tmpfs-mode="); ok {
 		return "mode=" + value
-	}
-	if value, ok := strings.CutPrefix(option, "tmpfs-size="); ok {
-		return "size=" + value
 	}
 	return option
 }

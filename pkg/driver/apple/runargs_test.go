@@ -109,37 +109,117 @@ func TestRedactArgs(t *testing.T) {
 	}
 }
 
+// mountArgs returns every value that follows a --mount flag, so tests assert
+// mount contents independent of unrelated flag ordering.
+func mountArgs(args []string) []string {
+	var mounts []string
+	for i := range len(args) - 1 {
+		if args[i] == testMountFlag {
+			mounts = append(mounts, args[i+1])
+		}
+	}
+	return mounts
+}
+
+func runArgsWithMounts(
+	workspace *config.Mount,
+	mounts ...*config.Mount,
+) []string {
+	return (&appleDriver{}).buildRunArgs(&driver.RunImageDevContainerParams{
+		ParsedConfig: &config.DevContainerConfig{},
+		Options: &driver.RunOptions{
+			Image:          testImageRef,
+			WorkspaceMount: workspace,
+			Mounts:         mounts,
+		},
+	})
+}
+
 func TestBuildRunArgsTmpfs(t *testing.T) {
 	for _, tt := range []struct{ mount, want string }{
 		{"type=tmpfs,target=/run/secrets,tmpfs-mode=0755", "type=tmpfs,dst=/run/secrets,mode=0755"},
 		{"type=tmpfs,target=/run/devsy/secrets-env,tmpfs-mode=0700", "type=tmpfs,dst=/run/devsy/secrets-env,mode=0700"},
-		{"type=tmpfs,target=/scratch,tmpfs-size=4096", "type=tmpfs,dst=/scratch,size=4096"},
 		{
 			"type=tmpfs,target=/scratch,tmpfs-mode=0700,future-option=enabled",
 			"type=tmpfs,dst=/scratch,mode=0700,future-option=enabled",
 		},
-		{"type=tmpfs,target=/scratch,tmpfs-size=oops,tmpfs-mode=invalid", "type=tmpfs,dst=/scratch,size=oops,mode=invalid"},
+		{"type=tmpfs,target=/scratch,tmpfs-mode=invalid", "type=tmpfs,dst=/scratch,mode=invalid"},
 		{
 			"type=tmpfs,target=/scratch,tmpfs-mode=0777,tmpfs-mode=0700,readonly=false",
 			"type=tmpfs,dst=/scratch,mode=0777,mode=0700,readonly=false",
 		},
-		{"type=tmpfs,target=/scratch,tmpfs-size=0,tmpfs-mode=0000", "type=tmpfs,dst=/scratch,size=0,mode=0000"},
+		{"type=tmpfs,target=/scratch,tmpfs-mode=0000", "type=tmpfs,dst=/scratch,mode=0000"},
 	} {
 		t.Run(tt.mount, func(t *testing.T) {
 			mount := config.ParseMount(tt.mount)
 			original := mount.String()
-			params := &driver.RunImageDevContainerParams{
-				ParsedConfig: &config.DevContainerConfig{},
-				Options: &driver.RunOptions{
-					Image:  testImageRef,
-					Mounts: []*config.Mount{&mount},
-				},
-			}
-			args := (&appleDriver{}).buildRunArgs(params)
-			require.Equal(t, []string{testMountFlag, tt.want}, args[2:4])
+			originalOther := append([]string(nil), mount.Other...)
+			args := runArgsWithMounts(nil, &mount)
+			require.Equal(t, []string{tt.want}, mountArgs(args))
 			require.Equal(t, original, mount.String())
+			require.Equal(t, originalOther, mount.Other)
 		})
 	}
+}
+
+// tmpfs-size is not translated: Apple container 1.5.0 turns sub-MiB sizes into
+// zero (uncapped), so a Docker-style size must reach the CLI unchanged and be
+// rejected there. A native size= is the user's own CLI syntax.
+func TestBuildRunArgsLeavesTmpfsSizeUntranslated(t *testing.T) {
+	for _, tt := range []struct{ mount, want string }{
+		{"type=tmpfs,target=/scratch,tmpfs-size=4096", "type=tmpfs,dst=/scratch,tmpfs-size=4096"},
+		{
+			"type=tmpfs,target=/scratch,tmpfs-size=1M,tmpfs-mode=0700",
+			"type=tmpfs,dst=/scratch,tmpfs-size=1M,mode=0700",
+		},
+		{"type=tmpfs,target=/scratch,size=2M", "type=tmpfs,dst=/scratch,size=2M"},
+	} {
+		t.Run(tt.mount, func(t *testing.T) {
+			mount := config.ParseMount(tt.mount)
+			require.Equal(t, []string{tt.want}, mountArgs(runArgsWithMounts(nil, &mount)))
+		})
+	}
+}
+
+func TestBuildRunArgsTmpfsWorkspaceMount(t *testing.T) {
+	workspace := config.ParseMount("type=tmpfs,target=/workspaces/app,tmpfs-mode=0700")
+	original := workspace.String()
+	originalOther := append([]string(nil), workspace.Other...)
+
+	args := runArgsWithMounts(&workspace)
+
+	require.Equal(t, []string{"type=tmpfs,dst=/workspaces/app,mode=0700"}, mountArgs(args))
+	require.Equal(t, original, workspace.String())
+	require.Equal(t, originalOther, workspace.Other)
+}
+
+func TestBuildRunArgsWorkspaceAndMountsBothTranslated(t *testing.T) {
+	workspace := config.ParseMount("type=tmpfs,target=/workspaces/app,tmpfs-mode=0700")
+	secrets := config.ParseMount("type=tmpfs,target=/run/secrets,tmpfs-mode=0755")
+	require.Equal(
+		t,
+		[]string{
+			"type=tmpfs,dst=/workspaces/app,mode=0700",
+			"type=tmpfs,dst=/run/secrets,mode=0755",
+		},
+		mountArgs(runArgsWithMounts(&workspace, &secrets)),
+	)
+}
+
+func TestBuildRunArgsBindWorkspaceMountIsNotTranslated(t *testing.T) {
+	workspace := config.Mount{
+		Type:   "bind",
+		Source: t.TempDir(),
+		Target: "/workspaces/app",
+		Other:  []string{"tmpfs-mode=0700", "consistency=cached"},
+	}
+	args := runArgsWithMounts(&workspace)
+	// tmpfs-mode is only translated for tmpfs; consistency= is still cleaned.
+	require.Equal(
+		t,
+		[]string{"type=bind,src=" + workspace.Source + ",dst=/workspaces/app,tmpfs-mode=0700"},
+		mountArgs(args),
+	)
 }
 
 func TestBuildRunArgsPreservesOtherMountDirectives(t *testing.T) {
