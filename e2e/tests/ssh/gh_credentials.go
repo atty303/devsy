@@ -241,6 +241,8 @@ exec dbus-run-session -- sh -c '
 		"docker",
 		"run",
 		"--rm",
+		"--user",
+		"root",
 		"--platform",
 		"linux/"+fixture.arch,
 		"--name",
