@@ -47,3 +47,13 @@ func TestGHCommandForwardsArgumentsAndConfiguresLogging(t *testing.T) {
 		})
 	}
 }
+
+func TestGHWrapperInstallCommandRejectsInvalidPorts(t *testing.T) {
+	for _, port := range []string{"0", "65536", "not-a-port"} {
+		t.Run(port, func(t *testing.T) {
+			cmd := NewInstallGHWrapperCmd()
+			cmd.SetArgs([]string{port})
+			require.ErrorContains(t, cmd.Execute(), "invalid credentials server port")
+		})
+	}
+}

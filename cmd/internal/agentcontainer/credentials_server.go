@@ -121,7 +121,7 @@ func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) error {
 	cmd.maybeForwardPorts(runCtx, tunnelClient)
 	if cmd.ConfigureGitHubHelper {
 		if err := ghcredentials.Install(port); err != nil {
-			log.Debug("GitHub CLI wrapper installation unavailable")
+			log.Warnf("GitHub CLI wrapper installation unavailable: %v", err)
 		}
 	}
 

@@ -164,6 +164,10 @@ class RelayChecks:
         self.stderr_outputs = []
 
     def check_installation(self):
+        server_pid = Path('/home/vscode/gh-relay-server-pid').read_text().strip()
+        server_uid = next(line.split()[1:] for line in Path('/proc', server_pid, 'status').read_text().splitlines() if line.startswith('Uid:'))
+        self.verify('credentials server stays non-root', all(uid != '0' for uid in server_uid))
+        self.verify('wrapper directory remains root-owned and protected', Path('/usr/local/bin').stat().st_uid == 0 and Path('/usr/local/bin').stat().st_mode & 0o022 == 0)
         self.verify('SSH server predates wrapper installation', (ROOT / 'pre-install-gh').read_text().strip() == '/usr/local/bin/gh')
         self.verify('standard wrapper installed', Path('/usr/local/bin/gh').read_text().startswith('#!/bin/sh\n# devsy gh relay\n'))
         self.verify('real gh preserved in fixed backup', Path('/usr/local/bin/gh.devsy-original').read_bytes() == (ROOT / 'gh').read_bytes())

@@ -2,12 +2,36 @@ package ghcredentials
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestInstallWithSudoPreservesArgumentsAndFailure(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+	writeTestExecutable(t, filepath.Join(dir, "sudo"), []byte(
+		"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DEVSY_TEST_SUDO_ARGS\"\n"+
+			"exit \"$DEVSY_TEST_SUDO_EXIT\"\n",
+	))
+	t.Setenv("PATH", dir)
+	t.Setenv("DEVSY_TEST_SUDO_ARGS", record)
+	t.Setenv("DEVSY_TEST_SUDO_EXIT", "0")
+	require.NoError(t, installWithSudo("/absolute path/devsy", 12049))
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	args, err := root.ReadFile("args")
+	require.NoError(t, err)
+	require.Equal(t, "/absolute path/devsy\ninternal\ninstall-gh-wrapper\n12049\n", string(args))
+	t.Setenv("DEVSY_TEST_SUDO_EXIT", "1")
+	var exit *exec.ExitError
+	require.ErrorAs(t, installWithSudo("/absolute path/devsy", 12049), &exit)
+	require.Equal(t, 1, exit.ExitCode())
+}
 
 const (
 	testOriginalName  = "real-gh"
