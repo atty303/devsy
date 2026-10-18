@@ -82,7 +82,9 @@ func resolveToken(ctx context.Context, binary, host string, env []string) (strin
 	defer cancel()
 	//nolint:gosec // binary is resolved from the user's PATH; host is one argument.
 	cmd := exec.CommandContext(ctx, binary, "auth", "token", "--hostname", host)
-	cmd.Env = env
+	// Scope this to the lookup child: nested wrappers must not return forwarded
+	// credentials as evidence of local authentication.
+	cmd.Env = replaceEnv(env, authProbeEnv, "1")
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {

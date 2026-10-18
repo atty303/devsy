@@ -16,6 +16,7 @@ type hostDecision struct {
 	Preferences bool   `json:"account_preferences,omitempty"`
 	SameUser    bool   `json:"same_user,omitempty"`
 	Probe       string `json:"token_probe,omitempty"`
+	ProbeMode   string `json:"token_probe_mode,omitempty"`
 }
 
 // Only these source-allowlisted fields may enter local diagnostics. Command
