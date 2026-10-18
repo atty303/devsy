@@ -324,21 +324,26 @@ func (s *session) probeConfig() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, name := range []string{hostsFile, configFile} {
-		if err := s.copyProbeFile(dir, name); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", err
-		}
+	if err := copyConfigFiles(filepath.Join(s.dir, "before"), dir); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
 	}
 	return dir, nil
 }
 
-func (s *session) copyProbeFile(dir, name string) error {
-	b, err := readFile(filepath.Join(s.dir, "before", name))
-	if err != nil || b == nil {
-		return err
+func copyConfigFiles(src, dst string) error {
+	for _, name := range []string{hostsFile, configFile} {
+		b, err := readFile(filepath.Join(src, name))
+		if err != nil {
+			return err
+		}
+		if b != nil {
+			if err := os.WriteFile(filepath.Join(dst, name), b, 0o600); err != nil {
+				return err
+			}
+		}
 	}
-	return os.WriteFile(filepath.Join(dir, name), b, 0o600)
+	return nil
 }
 
 func (s *session) strip(before, data []byte) ([]byte, error) {

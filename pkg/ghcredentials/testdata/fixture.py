@@ -90,11 +90,16 @@ def check():
         e = dict(os.environ)
         if env:
             e.update(env)
-        return subprocess.run(['/bin/bash', '-lc', 'exec gh "$@"', '--', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        return subprocess.run(['/fixture/ssh-client', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
     def api(host, expected='host-user', **kw):
         r = gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
         ok = r.returncode == 0 and r.stdout.strip() == expected
         return ok
+    verify('SSH server predates wrapper installation', (ROOT / 'pre-install-gh').read_text().strip() == '/usr/local/bin/gh')
+    verify('standard wrapper installed', Path('/usr/local/bin/gh').read_text().startswith('#!/bin/sh\n# devsy gh relay\n'))
+    verify('real gh preserved in fixed backup', Path('/usr/local/bin/gh.devsy-original').read_bytes() == (ROOT / 'gh').read_bytes())
+    verify('no dedicated profile installed', not Path('/etc/profile.d/devsy-gh.sh').exists())
+    host_before = (ROOT / 'host-gh' / 'hosts.yml').read_bytes()
     original = ROOT / 'guest-gh'
     original.mkdir(exist_ok=True)
     def saved():
@@ -106,7 +111,6 @@ def check():
         return json.loads(max(folder.glob('*.json'), key=lambda f: f.stat().st_mtime_ns).read_text())
 
 
-    # Dotfiles contain account preferences, never authentication.
     registrations = (
         'github.com:\n    git_protocol: https\n    user: local-user\n    users:\n        local-user:\n'
         'enterprise.one.test:\n    git_protocol: https\n    user: host-user\n    oauth_token: \"\"\n    users:\n        host-user:\n            oauth_token: \"\"\n'
@@ -114,18 +118,16 @@ def check():
     )
     (original / 'hosts.yml').write_text(registrations)
 
-    # A third-party dispatcher can return to Devsy after resolving the real gh.
-    # Exercise both entries without depending on any particular tool manager.
     dispatcher = ROOT / 'dispatcher'
     dispatcher.mkdir()
     shim = dispatcher / 'gh'
-    shim.write_text('#!/bin/sh\nexport PATH=/usr/local/bin:/usr/bin:/bin\nif [ -n "$GH_TEST_CONFIG_OVERRIDE" ]; then export GH_CONFIG_DIR="$GH_TEST_CONFIG_OVERRIDE"; fi\nexec /usr/local/share/devsy/gh/bin/gh "$@"\n')
+    shim.write_text('#!/bin/sh\nexport PATH=/usr/bin:/usr/local/bin:/bin\nif [ -n "$GH_TEST_CONFIG_OVERRIDE" ]; then export GH_CONFIG_DIR="$GH_TEST_CONFIG_OVERRIDE"; fi\nexec /usr/local/bin/gh "$@"\n')
     shim.chmod(0o755)
     def nested_gh(*args, token=None, env=None):
         e = dict(os.environ, PATH=str(dispatcher) + ':/usr/local/bin:/usr/bin:/bin')
         if env:
             e.update(env)
-        return subprocess.run(['/usr/local/share/devsy/gh/bin/gh', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        return subprocess.run(['/usr/local/bin/gh', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
     def nested_api(host, expected='host-user', **kw):
         r = nested_gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
         return r.returncode == 0 and r.stdout.strip() == expected
@@ -152,6 +154,34 @@ def check():
     (original / 'hosts.yml').write_text(registrations)
 
     verify('tokenless registrations use host active accounts', all(api(h) for h in HOSTS))
+    verify('non-PTY SSH uses fixed real-gh backup', last_diagnostic()['binary'] == '/usr/local/bin/gh.devsy-original')
+    selected = ROOT / 'selected-gh'
+    selected.mkdir()
+    (selected / 'gh').symlink_to('/usr/bin/gh')
+    r = subprocess.run(['/usr/local/bin/gh', 'api', 'user', '--hostname', HOSTS[0], '--jq', '.login'], env=dict(os.environ, PATH=str(selected) + ':/usr/local/bin:/usr/bin:/bin'), text=True, capture_output=True, timeout=20)
+    verify('repo-selected gh precedes fixed backup', r.returncode == 0 and r.stdout.strip() == 'host-user' and last_diagnostic()['binary'] == str(selected / 'gh'))
+    git_config = Path.home() / '.gitconfig'
+    previous_git_config = git_config.read_bytes() if git_config.exists() else None
+    try:
+        verify('setup-git accepts forwarded authentication', gh('auth', 'setup-git').returncode == 0)
+        helper = subprocess.run(['git', 'config', '--global', '--get-all', 'credential.https://github.com.helper'], text=True, capture_output=True, timeout=20)
+        verify('setup-git persists the relay wrapper', helper.returncode == 0 and '/usr/local/bin/gh auth git-credential' in helper.stdout and 'gh.devsy-original' not in helper.stdout)
+        credentials = subprocess.run(['git', 'credential', 'fill'], input='protocol=https\nhost=github.com\n\n', env=dict(os.environ, GIT_TERMINAL_PROMPT='0'), text=True, capture_output=True, timeout=20)
+        verify('persisted Git helper retrieves forwarded authentication', credentials.returncode == 0 and ('password=' + secrets[HOSTS[0]]['forwarded']) in credentials.stdout)
+    finally:
+        if previous_git_config is None:
+            git_config.unlink(missing_ok=True)
+        else:
+            git_config.write_bytes(previous_git_config)
+    verify('self-path alias saves', gh('alias', 'set', 'self-path', '!printf "%s" "$GH_PATH"').returncode == 0)
+    verify('aliases inherit relay self-path', gh('self-path').stdout == '/usr/local/bin/gh')
+    verify('default self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '/usr/local/bin/gh' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'default')
+    verify('container self-path does not alter host inputs', last_diagnostic()['host_context']['inputs']['GH_PATH_SOURCE'] == 'unset' and 'GH_PATH' not in last_diagnostic()['host_context']['inputs'])
+    verify('explicit self-path is preserved', gh('self-path', env={'GH_PATH': '/fixture/custom-gh'}).stdout == '/fixture/custom-gh')
+    verify('explicit self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '/fixture/custom-gh' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'environment')
+    verify('explicit empty self-path is preserved', gh('self-path', env={'GH_PATH': ''}).stdout == '')
+    verify('explicit empty self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'environment')
+    verify('self-path alias removed', gh('alias', 'delete', 'self-path').returncode == 0)
     verify('real auth status ignores hidden tokenless registrations', gh('auth', 'status').returncode == 0)
     verify('unchanged invocation preserves exact dotfiles registrations', saved() == registrations and no_forwarded_saved())
     decisions = last_diagnostic()['hosts']
@@ -254,7 +284,6 @@ def check():
     verify('extension streams and failure exit pass unchanged', r.returncode == 7 and r.stdout == 'host-user\nextension-out\n' and r.stderr == 'extension-err\n')
     verify('extension change persists after failure', gh('config', 'get', 'pager').stdout.strip() == 'cat')
 
-    # Symlinked config and dotfiles replacement between snapshot and writeback.
     config = original / 'config.yml'
     target = ROOT / 'dotfiles-config.yml'
     config.rename(target)
@@ -296,7 +325,6 @@ def check():
     verify('next invocation recovers killed wrapper mutation', gh('config', 'get', 'editor').stdout.strip() == 'pending')
     verify('recovered session contains no forwarded credentials', no_forwarded_saved())
 
-    # A writeback failure must preserve gh's exit status and retain the changes.
     ready.unlink()
     verify('prepare pending writeback', gh('config', 'set', 'editor', 'vi').returncode == 0)
     p = pending()
@@ -319,7 +347,6 @@ def check():
     verify('pending writeback recovered after original repaired', gh('config', 'get', 'editor').stdout.strip() == 'pending')
 
 
-    # Killing only the wrapper must not reap the still-running real gh.
     ready.unlink()
     release.unlink()
     verify('prepare live-child ownership', gh('config', 'set', 'editor', 'vi').returncode == 0)
@@ -337,9 +364,8 @@ def check():
             os.killpg(p.pid, signal.SIGKILL)
             p.communicate()
 
-    verify('host auth unchanged by guest operations', all(v['forwarded'] in (ROOT / 'host-gh' / 'hosts.yml').read_text() for v in secrets.values()))
+    verify('host auth unchanged by guest operations', (ROOT / 'host-gh' / 'hosts.yml').read_bytes() == host_before and not (ROOT / 'host-gh' / 'config.yml').exists())
 
-    # A host active-account change must be observed on the very next invocation.
     hp = ROOT / 'host-gh' / 'hosts.yml'
 
     host_before = hp.read_text()
@@ -383,7 +409,6 @@ def check():
         held.rename(diagnostic_dir)
     verify('normal sessions cleaned', not list((ROOT / 'guest-cache' / 'devsy' / 'gh-relay').glob('session-*')))
 
-    # Leave one interrupted change for the caller to recover after stopping RPC.
     ready.unlink()
     release.unlink()
     verify('prepare relay-loss recovery', gh('config', 'set', 'editor', 'vi').returncode == 0)

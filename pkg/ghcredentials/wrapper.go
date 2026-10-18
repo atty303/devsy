@@ -19,8 +19,6 @@ const (
 	authProbeEnv = "DEVSY_GH_AUTH_PROBE"
 )
 
-// Run is the wrapper entry point. args starts with the wrapper's path, followed
-// by untouched gh arguments. It bypasses Devsy's CLI/env/log initialization.
 func Run(args []string) int {
 	if len(args) == 0 {
 		return 127
@@ -30,6 +28,9 @@ func Run(args []string) int {
 		return 127
 	}
 	env := os.Environ()
+	if _, explicit := os.LookupEnv("GH_PATH"); !explicit {
+		env = replaceEnv(env, "GH_PATH", wrapperPath)
+	}
 	active := os.Getenv(sessionEnv)
 	// A local lookup may re-enter through another dispatcher. Keep forwarding
 	// disabled throughout that process tree, even if it changes GH_CONFIG_DIR.
@@ -133,6 +134,7 @@ func (inv *invocation) withSession(s *session) int {
 }
 
 func realBinary(wrapper string) (string, error) {
+	installed, _ := filepath.EvalSymlinks(wrapper)
 	self, _ := os.Stat(wrapper)
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		path := filepath.Join(dir, "gh")
@@ -141,6 +143,11 @@ func realBinary(wrapper string) (string, error) {
 			continue
 		}
 		if self != nil && os.SameFile(self, info) {
+			backup := installed + backupSuffix
+			original, err := executableInfo(backup)
+			if err == nil && !os.SameFile(self, original) {
+				return filepath.Abs(backup)
+			}
 			continue
 		}
 		return filepath.Abs(path)

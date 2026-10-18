@@ -1,50 +1,122 @@
 package ghcredentials
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"al.essio.dev/pkg/shellescape"
-	"github.com/devsy-org/devsy/pkg/envfile"
 )
 
-const WrapperDir = "/usr/local/share/devsy/gh/bin"
+const (
+	wrapperPath   = "/usr/local/bin/gh"
+	backupSuffix  = ".devsy-original"
+	wrapperHeader = "#!/bin/sh\n# devsy gh relay\n"
+)
 
-// Install owns only its private executable and a system profile fragment. The
-// user's gh binaries, configuration, and shell dotfiles are never replaced.
 func Install(port int) error {
 	binary, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	// #nosec G301 -- Public executable path; it contains no authentication data.
-	if err := os.MkdirAll(WrapperDir, 0o755); err != nil {
+	return installWrapper(wrapperPath, binary, port)
+}
+
+func installWrapper(path, binary string, port int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dir := filepath.Dir(path)
+	// #nosec G301 -- Public executable directory without authentication data.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	l, err := lock(ctx, filepath.Join(dir, ".devsy-gh-install.lock"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = l.Close() }()
+
+	staged, err := stageWrapper(dir, binary, port)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(staged) }()
+	moved, err := backupOriginal(path)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(staged, path); err != nil {
+		if moved {
+			return errors.Join(err, os.Rename(path+backupSuffix, path))
+		}
+		return err
+	}
+	return nil
+}
+
+func stageWrapper(dir, binary string, port int) (name string, err error) {
 	script := fmt.Sprintf(
-		"#!/bin/sh\n# devsy gh relay\nexport DEVSY_CREDENTIALS_SERVER_PORT=%d\nexec %s internal gh \"$0\" \"$@\"\n",
+		wrapperHeader+"export DEVSY_CREDENTIALS_SERVER_PORT=%d\nexec %s internal gh \"$0\" \"$@\"\n",
 		port,
 		shellescape.Quote(binary),
 	)
-	//nolint:gosec // This is the executable wrapper, containing no credentials.
-	if err := os.WriteFile(filepath.Join(WrapperDir, "gh"), []byte(script), 0o755); err != nil {
-		return err
+	f, err := os.CreateTemp(dir, ".devsy-gh-wrapper-*")
+	if err != nil {
+		return "", err
 	}
-	// Devsy SSH/IDE sessions read envfile; login shells also need the wrapper.
-	path := os.Getenv("PATH")
-	if !strings.HasPrefix(path, WrapperDir+":") {
-		path = WrapperDir + ":" + path
+	name = f.Name()
+	defer func() {
+		_ = f.Close()
+		if err != nil {
+			_ = os.Remove(name)
+		}
+	}()
+	if _, err = f.WriteString(script); err != nil {
+		return name, err
 	}
-	envfile.MergeAndApply(map[string]string{"PATH": path})
-	// #nosec G301 -- System shell profiles must be readable by workspace users.
-	if err := os.MkdirAll("/etc/profile.d", 0o755); err != nil {
-		return err
+	if err = f.Chmod(0o755); err != nil {
+		return name, err
 	}
-	profile := fmt.Sprintf(`# devsy gh relay
-case ":$PATH:" in *:%s:*) ;; *) export PATH=%s:"$PATH" ;; esac
-`, WrapperDir, WrapperDir)
-	// #nosec G306 -- Public PATH configuration, containing no credentials.
-	return os.WriteFile("/etc/profile.d/devsy-gh.sh", []byte(profile), 0o644)
+	err = f.Close()
+	return name, err
+}
+
+func backupOriginal(path string) (bool, error) {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	own, err := isWrapper(path)
+	if err != nil || own {
+		return false, err
+	}
+	if _, err := executableInfo(path); err != nil {
+		return false, err
+	}
+	if err := os.Rename(path, path+backupSuffix); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func isWrapper(path string) (bool, error) {
+	f, err := resolvedFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	header := make([]byte, len(wrapperHeader))
+	_, err = io.ReadFull(f, header)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return string(header) == wrapperHeader, nil
 }

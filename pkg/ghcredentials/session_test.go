@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	testHost           = "github.example"
-	testUser           = "relay-user"
 	testPathEnv        = "PATH=/usr/bin:/bin"
 	testForwardedToken = "dummy-forwarded-value"
+	testHost           = "github.example"
+	testUser           = "relay-user"
 )
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -36,7 +36,6 @@ func TestSessionMergePreservesDotfilesAndConcurrentChanges(t *testing.T) {
 	require.NoError(t, err)
 	writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\npager: less\n")
 	s.writeback = &writebackSummary{}
-	// Dotfiles reapplies a new original during the command.
 	writeTestFile(t, target, "editor: emacs\npager: cat\nprompt: disabled\n")
 	require.NoError(t, s.finish(context.Background()))
 	link, err := os.Readlink(filepath.Join(original, configFile))
@@ -67,7 +66,6 @@ func TestSessionConcurrentInvocationsAndRecovery(t *testing.T) {
 	writeTestFile(t, filepath.Join(a.work(), configFile), "editor: nano\npager: less\n")
 	writeTestFile(t, filepath.Join(b.work(), configFile), "editor: vi\npager: cat\n")
 	require.NoError(t, a.finish(context.Background()))
-	// Simulate a killed wrapper releasing its ownership lock without cleanup.
 	require.NoError(t, b.lock.Close())
 	c, err := startSession(context.Background(), original, nil)
 	require.NoError(t, err)
@@ -167,7 +165,6 @@ func TestDanglingDotfilesSymlinkKeepsPendingChanges(t *testing.T) {
 
 func TestDisabledWritebackDiagnosticsDoNotParseConfiguration(t *testing.T) {
 	var summary *writebackSummary
-	// Invalid YAML would fail diagnostic parsing if the disabled sink were entered.
 	require.NoError(t, summary.inspect(configFile, []byte("["), []byte("["), []byte("[")))
 }
 
@@ -292,7 +289,7 @@ printf '%s' "$GH_TOKEN"
 		"DEVSY_GH_SESSION=existing-session",
 		"GH_TOKEN=dummy-local-value",
 	}
-	token, err := resolveToken(context.Background(), "/bin/sh", "github.example", env)
+	token, err := resolveToken(context.Background(), "/bin/sh", testHost, env)
 	require.NoError(t, err)
 	require.True(t, "GH_TOKEN="+token == env[3], "local environment authentication changed")
 	require.Equal(t, "DEVSY_GH_AUTH_PROBE=0", env[1])
