@@ -111,7 +111,6 @@ def check():
         return json.loads(max(folder.glob('*.json'), key=lambda f: f.stat().st_mtime_ns).read_text())
 
 
-    # Dotfiles contain account preferences, never authentication.
     registrations = (
         'github.com:\n    git_protocol: https\n    user: local-user\n    users:\n        local-user:\n'
         'enterprise.one.test:\n    git_protocol: https\n    user: host-user\n    oauth_token: \"\"\n    users:\n        host-user:\n            oauth_token: \"\"\n'
@@ -119,8 +118,6 @@ def check():
     )
     (original / 'hosts.yml').write_text(registrations)
 
-    # A third-party dispatcher can return to Devsy after resolving the real gh.
-    # Exercise both entries without depending on any particular tool manager.
     dispatcher = ROOT / 'dispatcher'
     dispatcher.mkdir()
     shim = dispatcher / 'gh'

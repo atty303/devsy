@@ -165,7 +165,6 @@ func TestDanglingDotfilesSymlinkKeepsPendingChanges(t *testing.T) {
 
 func TestDisabledWritebackDiagnosticsDoNotParseConfiguration(t *testing.T) {
 	var summary *writebackSummary
-	// Invalid YAML would fail diagnostic parsing if the disabled sink were entered.
 	require.NoError(t, summary.inspect(configFile, []byte("["), []byte("["), []byte("[")))
 }
 
