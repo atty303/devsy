@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import ssl
 import subprocess
 import sys
@@ -12,6 +13,33 @@ import time
 ROOT = Path('/fixture')
 HOSTS = ['github.com', 'enterprise.one.test', 'enterprise.two.test']
 secrets = json.loads((ROOT / 'accounts.json').read_text())
+
+SSH_ENV = [
+    'HOME', 'GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+    'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
+    'GH_HOST', 'GH_PATH', 'GH_PROMPT_DISABLED', 'GH_BROWSER', 'HTTP_PROXY',
+    'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'DBUS_SESSION_BUS_ADDRESS',
+    'DEVSY_LOG_LEVEL',
+]
+
+def ssh_command(command):
+    return [
+        'ssh', '-F', '/dev/null', '-T', '-p', '12050', '-oStrictHostKeyChecking=no',
+        '-oUserKnownHostsFile=/dev/null', '-oLogLevel=ERROR', '-oBatchMode=yes',
+        '-oSendEnv=' + ' '.join(SSH_ENV), 'root@127.0.0.1', command,
+    ]
+
+def probe():
+    for _ in range(50):
+        try:
+            result = subprocess.run(ssh_command('command -v gh'), stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=1)
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            (ROOT / 'pre-install-gh').write_text(result.stdout)
+            return
+        time.sleep(0.1)
+    raise SystemExit(1)
 
 def server():
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', '/tmp/fixture-key.pem', '-out', '/tmp/fixture-cert.pem', '-days', '1', '-subj', '/CN=github.com', '-addext', 'subjectAltName=DNS:github.com,DNS:api.github.com,DNS:enterprise.one.test,DNS:enterprise.two.test'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -91,7 +119,7 @@ def check():
         e = dict(os.environ)
         if env:
             e.update(env)
-        result = subprocess.run(['/fixture/ssh-client', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        result = subprocess.run(ssh_command(shlex.join(['gh', *args])), input=token, text=True, capture_output=True, env=e, timeout=20)
         stderr_outputs.append(result.stderr)
         return result
     def api(host, expected='host-user', **kw):
@@ -433,5 +461,7 @@ def check():
 
 if sys.argv[1] == 'server':
     server()
+elif sys.argv[1] == 'probe':
+    probe()
 else:
     check()

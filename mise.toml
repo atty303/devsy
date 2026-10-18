@@ -111,10 +111,6 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 protoc -I . tunnel.proto --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative
 '''
 
-[tasks."cli:test:gh-relay"]
-description = "verify GitHub CLI relay with isolated real gh and Linux keyring (requires Docker)"
-run = 'go test -tags=ghrelay ./pkg/ghcredentials -run "^TestRealGitHubCLI$" -v -count=1 -timeout=10m'
-
 [tasks."cli:test"]
 description = "run devsy unit tests"
 shell = "bash -c"
@@ -129,7 +125,7 @@ description = "build devsy for e2e tests"
 run = [
   { task = "cli:build:dev" },
   "mkdir -p e2e/bin",
-  "cp dist/devsy-dev_linux_amd64_v1/devsy-linux-amd64 e2e/bin/devsy-linux-amd64",
+  'for binary in dist/devsy-dev_linux_*/devsy-linux-*; do cp "$binary" e2e/bin/; done',
   '''
 host_os="$(go env GOOS)"
 host_arch="$(go env GOARCH)"

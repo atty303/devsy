@@ -1,6 +1,4 @@
-//go:build ghrelay
-
-package ghcredentials_test
+package ssh
 
 import (
 	"archive/tar"
@@ -20,25 +18,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/devsy-org/devsy/pkg/agent/tunnelserver"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/require"
 )
 
-//go:embed testdata/Dockerfile testdata/fixture.py testdata/ssh.go
+//go:embed testdata/gh-relay/Dockerfile testdata/gh-relay/fixture.py
 var fixtureFiles embed.FS
 
-func TestRealGitHubCLI(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
-	defer cancel()
+func testGitHubCLIForwarding(ctx context.Context) {
+	t := ginkgo.GinkgoT()
 	dir := t.TempDir()
-	name := prepareFixture(t, ctx, dir)
+	fixture := prepareFixture(t, ctx, dir)
 	prepareHostAuthentication(t, dir)
-	stop, done := startFixture(t, ctx, dir, name)
+	stop, done := startFixture(t, ctx, dir, fixture)
 	defer stop()
-	waitFixture(t, ctx, name, done)
+	waitFixture(t, ctx, fixture.name, done)
 	// stdout contains only boolean test results. Raw gh streams and credentials
 	// stay inside the disposable fixture and are never attached to failures.
 	//nolint:gosec // name is the generated test container.
@@ -46,7 +43,7 @@ func TestRealGitHubCLI(t *testing.T) {
 		ctx,
 		"docker",
 		"exec",
-		name,
+		fixture.name,
 		"python3",
 		"/fixture/fixture.py",
 		"check",
@@ -55,13 +52,13 @@ func TestRealGitHubCLI(t *testing.T) {
 	require.NoError(t, err, "real gh checks: %s", report)
 	verifyRealGHReport(t, report)
 
-	verifyRelayFallback(t, ctx, name, stop)
+	verifyRelayFallback(t, ctx, fixture.name, stop)
 }
 
-func downloadGH(t *testing.T, ctx context.Context, dir string) {
+func downloadGH(t ginkgo.GinkgoTInterface, ctx context.Context, dir, arch string) {
 	t.Helper()
 	const version = "2.100.0"
-	filename := "gh_" + version + "_linux_" + runtime.GOARCH + ".tar.gz"
+	filename := "gh_" + version + "_linux_" + arch + ".tar.gz"
 	get := func(name string) []byte {
 		req, err := http.NewRequestWithContext(
 			ctx,
@@ -99,7 +96,7 @@ func downloadGH(t *testing.T, ctx context.Context, dir string) {
 	}
 }
 
-func verifyRealGHReport(t *testing.T, report []byte) {
+func verifyRealGHReport(t ginkgo.GinkgoTInterface, report []byte) {
 	t.Helper()
 	var results []struct {
 		Check string `json:"check"`
@@ -112,17 +109,32 @@ func verifyRealGHReport(t *testing.T, report []byte) {
 	}
 }
 
-func prepareFixture(t *testing.T, ctx context.Context, dir string) string {
+type ghRelayFixture struct {
+	name string
+	arch string
+}
+
+func prepareFixture(t ginkgo.GinkgoTInterface, ctx context.Context, dir string) ghRelayFixture {
 	t.Helper()
-	repo, err := filepath.Abs("../..")
+	agents, err := os.OpenRoot("bin")
 	require.NoError(t, err)
-	for _, name := range []string{"Dockerfile", "fixture.py", "ssh.go"} {
-		b, err := fixtureFiles.ReadFile("testdata/" + name)
-		require.NoError(t, err)
-		root, err := os.OpenRoot(dir)
+	defer func() { _ = agents.Close() }()
+	arch := runtime.GOARCH
+	agent := "devsy-linux-" + arch
+	if _, err := agents.Stat(agent); os.IsNotExist(err) {
+		arch = "amd64"
+		agent = "devsy-linux-" + arch
+	}
+	data, err := agents.ReadFile(agent)
+	require.NoError(t, err)
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	require.NoError(t, root.WriteFile("devsy", data, 0o755))
+	for _, name := range []string{"Dockerfile", "fixture.py"} {
+		b, err := fixtureFiles.ReadFile("testdata/gh-relay/" + name)
 		require.NoError(t, err)
 		require.NoError(t, root.WriteFile(name, b, 0o600))
-		require.NoError(t, root.Close())
 	}
 	random := make([]byte, 12)
 	_, err = rand.Read(random)
@@ -130,36 +142,28 @@ func prepareFixture(t *testing.T, ctx context.Context, dir string) string {
 	name := "devsy-gh-test-" + hex.EncodeToString(random)
 	image := name + ":test"
 	//nolint:gosec // image and directory are generated fixture resources.
-	buildImage := exec.CommandContext(ctx, "docker", "build", "-q", "-t", image, dir)
+	buildImage := exec.CommandContext(
+		ctx,
+		"docker",
+		"build",
+		"--platform",
+		"linux/"+arch,
+		"-q",
+		"-t",
+		image,
+		dir,
+	)
 	imageOut, err := buildImage.CombinedOutput()
 	require.NoError(t, err, "fixture image: %s", imageOut)
 	t.Cleanup(func() {
 		//nolint:gosec // image is the random, test-owned tag.
 		_ = exec.Command("docker", "image", "rm", image).Run()
 	})
-	//nolint:gosec // The output is inside t.TempDir; the source is this repository.
-	build := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(dir, "devsy"), ".")
-	build.Dir = repo
-	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
-	out, err := build.CombinedOutput()
-	require.NoError(t, err, "build: %s", out)
-	sshBuild := exec.CommandContext(
-		ctx,
-		"go",
-		"build",
-		"-o",
-		filepath.Join(dir, "ssh-client"),
-		filepath.Join(dir, "ssh.go"),
-	)
-	sshBuild.Dir, sshBuild.Env = repo, build.Env
-	sshOut, err := sshBuild.CombinedOutput()
-	require.NoError(t, err, "build ssh fixture: %s", sshOut)
-
-	downloadGH(t, ctx, dir)
-	return name
+	downloadGH(t, ctx, dir, arch)
+	return ghRelayFixture{name: name, arch: arch}
 }
 
-func prepareHostAuthentication(t *testing.T, dir string) {
+func prepareHostAuthentication(t ginkgo.GinkgoTInterface, dir string) {
 	t.Helper()
 	type tokens struct {
 		Forwarded string `json:"forwarded"`
@@ -209,11 +213,13 @@ func prepareHostAuthentication(t *testing.T, dir string) {
 }
 
 func startFixture(
-	t *testing.T,
+	t ginkgo.GinkgoTInterface,
 	ctx context.Context,
-	dir, name string,
+	dir string,
+	fixture ghRelayFixture,
 ) (context.CancelFunc, <-chan error) {
 	t.Helper()
+	name := fixture.name
 	image := name + ":test"
 	command := `cp /fixture/gh /usr/bin/gh
 cp /fixture/gh /usr/local/bin/gh
@@ -225,7 +231,7 @@ exec dbus-run-session -- sh -c '
  printf fixture-password | gnome-keyring-daemon --unlock >/dev/null 2>/tmp/keyring.log
  python3 /fixture/fixture.py server >/dev/null 2>/tmp/api.log &
  /usr/local/bin/devsy internal agent container ssh-server --address 127.0.0.1:12050 >/tmp/ssh.log 2>&1 &
- /fixture/ssh-client --probe > /fixture/pre-install-gh
+ python3 /fixture/fixture.py probe
  /usr/local/bin/devsy internal agent container credentials-server --user root --configure-github-helper
  sleep 600
 '`
@@ -235,6 +241,8 @@ exec dbus-run-session -- sh -c '
 		"docker",
 		"run",
 		"--rm",
+		"--platform",
+		"linux/"+fixture.arch,
 		"--name",
 		name,
 		"--network",
@@ -267,7 +275,7 @@ exec dbus-run-session -- sh -c '
 	return tunnelCancel, done
 }
 
-func waitFixture(t *testing.T, ctx context.Context, name string, done <-chan error) {
+func waitFixture(t ginkgo.GinkgoTInterface, ctx context.Context, name string, done <-chan error) {
 	t.Helper()
 	ready := false
 	for range 150 {
@@ -294,7 +302,12 @@ func waitFixture(t *testing.T, ctx context.Context, name string, done <-chan err
 	require.True(t, ready, "fixture was not ready")
 }
 
-func verifyRelayFallback(t *testing.T, ctx context.Context, name string, stop context.CancelFunc) {
+func verifyRelayFallback(
+	t ginkgo.GinkgoTInterface,
+	ctx context.Context,
+	name string,
+	stop context.CancelFunc,
+) {
 	t.Helper()
 	// A transport failure must execute normal gh once, without relayed auth.
 	stop()
