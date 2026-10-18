@@ -251,6 +251,11 @@ class RelayChecks:
         r = subprocess.run(['/usr/local/bin/gh', 'api', 'user', '--hostname', HOSTS[0], '--jq', '.login'], env=dict(os.environ, PATH=str(selected) + ':/usr/local/bin:/usr/bin:/bin', DEVSY_LOG_LEVEL='debug'), text=True, capture_output=True, timeout=20)
         self.stderr_outputs.append(r.stderr)
         self.verify('repo-selected gh precedes fixed backup', r.returncode == 0 and r.stdout.strip() == 'host-user' and 'gh relay: executable selected' in r.stderr and str(selected / 'gh') in r.stderr)
+        isolated = ROOT / 'isolated-path'
+        isolated.mkdir()
+        r = subprocess.run(['/usr/local/bin/gh', 'api', 'user', '--jq', '.login'], env=dict(os.environ, PATH=str(isolated), DEVSY_LOG_LEVEL='debug'), text=True, capture_output=True, timeout=20)
+        self.stderr_outputs.append(r.stderr)
+        self.verify('explicit wrapper uses backup outside PATH', r.returncode == 0 and r.stdout.strip() == 'host-user' and '/usr/local/bin/gh.devsy-original' in r.stderr)
 
     def check_self_references(self):
         git_config = Path.home() / '.gitconfig'
