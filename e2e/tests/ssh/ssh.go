@@ -41,6 +41,12 @@ var _ = ginkgo.Describe("devsy ssh test suite", ginkgo.Label("ssh"), ginkgo.Orde
 	})
 
 	ginkgo.It(
+		"should forward host GitHub CLI authentication without a container login",
+		ginkgo.SpecTimeout(framework.TimeoutLong()),
+		testGitHubCLIForwarding,
+	)
+
+	ginkgo.It(
 		"should start a new workspace with a docker provider (default) and SSH into it",
 		ginkgo.SpecTimeout(framework.TimeoutShort()),
 		func(ctx context.Context) {

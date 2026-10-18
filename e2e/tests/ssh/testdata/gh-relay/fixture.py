@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import ssl
 import subprocess
 import sys
@@ -12,6 +13,33 @@ import time
 ROOT = Path('/fixture')
 HOSTS = ['github.com', 'enterprise.one.test', 'enterprise.two.test']
 secrets = json.loads((ROOT / 'accounts.json').read_text())
+
+SSH_ENV = [
+    'HOME', 'GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+    'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
+    'GH_HOST', 'GH_PATH', 'GH_PROMPT_DISABLED', 'GH_BROWSER', 'HTTP_PROXY',
+    'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'DBUS_SESSION_BUS_ADDRESS',
+    'DEVSY_LOG_LEVEL',
+]
+
+def ssh_command(command):
+    return [
+        'ssh', '-F', '/dev/null', '-T', '-p', '12050', '-oStrictHostKeyChecking=no',
+        '-oUserKnownHostsFile=/dev/null', '-oLogLevel=ERROR', '-oBatchMode=yes',
+        '-oSendEnv=' + ' '.join(SSH_ENV), 'root@127.0.0.1', command,
+    ]
+
+def probe():
+    for _ in range(50):
+        try:
+            result = subprocess.run(ssh_command('command -v gh'), stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=1)
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            (ROOT / 'pre-install-gh').write_text(result.stdout)
+            return
+        time.sleep(0.1)
+    raise SystemExit(1)
 
 def server():
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', '/tmp/fixture-key.pem', '-out', '/tmp/fixture-cert.pem', '-days', '1', '-subj', '/CN=github.com', '-addext', 'subjectAltName=DNS:github.com,DNS:api.github.com,DNS:enterprise.one.test,DNS:enterprise.two.test'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -81,6 +109,7 @@ def check():
         'DBUS_SESSION_BUS_ADDRESS': (ROOT / 'bus').read_text().strip(),
     })
     results = []
+    stderr_outputs = []
     def verify(name, ok):
         results.append({'check': name, 'ok': bool(ok)})
         if not ok:
@@ -90,7 +119,9 @@ def check():
         e = dict(os.environ)
         if env:
             e.update(env)
-        return subprocess.run(['/fixture/ssh-client', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        result = subprocess.run(ssh_command(shlex.join(['gh', *args])), input=token, text=True, capture_output=True, env=e, timeout=20)
+        stderr_outputs.append(result.stderr)
+        return result
     def api(host, expected='host-user', **kw):
         r = gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
         ok = r.returncode == 0 and r.stdout.strip() == expected
@@ -106,11 +137,6 @@ def check():
         return (original / 'hosts.yml').read_text() if (original / 'hosts.yml').exists() else ''
     def no_forwarded_saved():
         return all(v['forwarded'] not in saved() for v in secrets.values())
-    def last_diagnostic():
-        folder = ROOT / 'guest-cache' / 'devsy' / 'gh-relay' / 'diagnostics'
-        return json.loads(max(folder.glob('*.json'), key=lambda f: f.stat().st_mtime_ns).read_text())
-
-
     registrations = (
         'github.com:\n    git_protocol: https\n    user: local-user\n    users:\n        local-user:\n'
         'enterprise.one.test:\n    git_protocol: https\n    user: host-user\n    oauth_token: \"\"\n    users:\n        host-user:\n            oauth_token: \"\"\n'
@@ -127,13 +153,14 @@ def check():
         e = dict(os.environ, PATH=str(dispatcher) + ':/usr/local/bin:/usr/bin:/bin')
         if env:
             e.update(env)
-        return subprocess.run(['/usr/local/bin/gh', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        result = subprocess.run(['/usr/local/bin/gh', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        stderr_outputs.append(result.stderr)
+        return result
     def nested_api(host, expected='host-user', **kw):
         r = nested_gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
         return r.returncode == 0 and r.stdout.strip() == expected
     verify('dispatcher re-entry cannot supply forwarded authentication to local lookup', all(nested_api(h) for h in HOSTS))
     verify('dispatcher re-entry preserves real auth status', nested_gh('auth', 'status').returncode == 0)
-    verify('dispatcher re-entry records local-only lookup', all(h['source'] == 'forwarded' and h['token_probe_mode'] == 'local_only' for h in last_diagnostic()['hosts']))
     redirected = ROOT / 'redirected-gh'
     redirected.mkdir()
     (redirected / 'hosts.yml').write_text(registrations)
@@ -153,13 +180,44 @@ def check():
     verify('nested alias removed', gh('alias', 'delete', 'probe-guard').returncode == 0)
     (original / 'hosts.yml').write_text(registrations)
 
+    envfile = Path('/etc/envfile.json')
+    previous_envfile = envfile.read_bytes() if envfile.exists() else None
+    try:
+        envfile.write_text(json.dumps({'env': {'GH_TOKEN': secrets[HOSTS[0]]['invalid']}}))
+        verify('Devsy envfile does not replace forwarded authentication', api(HOSTS[0]))
+        verify('Devsy envfile does not replace explicit authentication', api(HOSTS[0], 'local-user', env={'GH_TOKEN': secrets[HOSTS[0]]['local']}))
+    finally:
+        if previous_envfile is None:
+            envfile.unlink(missing_ok=True)
+        else:
+            envfile.write_bytes(previous_envfile)
+
+    for args in [('--help',), ('--version',), ('api', '--devsy-unknown-fixture-flag'), ('api', '--context', 'sample'), ('api', '--log-level', 'invalid'), ('api', '--log-output', 'json')]:
+        expected = subprocess.run(['/usr/local/bin/gh.devsy-original', *args], text=True, capture_output=True, timeout=20)
+        r = gh(*args)
+        verify('real gh arguments pass through Cobra: ' + ' '.join(args), (r.returncode, r.stdout, r.stderr) == (expected.returncode, expected.stdout, expected.stderr))
+    for level in ['debug', 'trace']:
+        r = gh('api', 'user', '--jq', '.login', env={'DEVSY_LOG_LEVEL': level})
+        verify(level + ' enables relay logs without changing stdout', r.returncode == 0 and r.stdout == 'host-user\n' and 'gh relay: authentication source' in r.stderr and 'forwarded' in r.stderr)
+    r = gh('api', 'user', '--jq', '.login')
+    verify('normal successful forwarding is silent', r.returncode == 0 and r.stdout == 'host-user\n' and r.stderr == '')
     verify('tokenless registrations use host active accounts', all(api(h) for h in HOSTS))
-    verify('non-PTY SSH uses fixed real-gh backup', last_diagnostic()['binary'] == '/usr/local/bin/gh.devsy-original')
+    try:
+        (original / 'hosts.yml').write_text('[invalid yaml')
+        expected = subprocess.run(['/usr/local/bin/gh.devsy-original', '--version'], text=True, capture_output=True, timeout=20)
+        r = gh('--version')
+        verify('overlay failure preserves gh stdout and exit', (r.returncode, r.stdout) == (expected.returncode, expected.stdout))
+        verify('overlay failure warns without config content', 'gh relay: forwarding unavailable' in r.stderr and 'schema_invalid' in r.stderr)
+    finally:
+        (original / 'hosts.yml').write_text(registrations)
+    r = gh('api', 'user', '--jq', '.login', env={'DEVSY_LOG_LEVEL': 'debug'})
+    verify('non-PTY SSH uses fixed real-gh backup', r.returncode == 0 and r.stdout.strip() == 'host-user' and 'gh relay: executable selected' in r.stderr and '/usr/local/bin/gh.devsy-original' in r.stderr)
     selected = ROOT / 'selected-gh'
     selected.mkdir()
     (selected / 'gh').symlink_to('/usr/bin/gh')
-    r = subprocess.run(['/usr/local/bin/gh', 'api', 'user', '--hostname', HOSTS[0], '--jq', '.login'], env=dict(os.environ, PATH=str(selected) + ':/usr/local/bin:/usr/bin:/bin'), text=True, capture_output=True, timeout=20)
-    verify('repo-selected gh precedes fixed backup', r.returncode == 0 and r.stdout.strip() == 'host-user' and last_diagnostic()['binary'] == str(selected / 'gh'))
+    r = subprocess.run(['/usr/local/bin/gh', 'api', 'user', '--hostname', HOSTS[0], '--jq', '.login'], env=dict(os.environ, PATH=str(selected) + ':/usr/local/bin:/usr/bin:/bin', DEVSY_LOG_LEVEL='debug'), text=True, capture_output=True, timeout=20)
+    stderr_outputs.append(r.stderr)
+    verify('repo-selected gh precedes fixed backup', r.returncode == 0 and r.stdout.strip() == 'host-user' and 'gh relay: executable selected' in r.stderr and str(selected / 'gh') in r.stderr)
     git_config = Path.home() / '.gitconfig'
     previous_git_config = git_config.read_bytes() if git_config.exists() else None
     try:
@@ -175,18 +233,11 @@ def check():
             git_config.write_bytes(previous_git_config)
     verify('self-path alias saves', gh('alias', 'set', 'self-path', '!printf "%s" "$GH_PATH"').returncode == 0)
     verify('aliases inherit relay self-path', gh('self-path').stdout == '/usr/local/bin/gh')
-    verify('default self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '/usr/local/bin/gh' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'default')
-    verify('container self-path does not alter host inputs', last_diagnostic()['host_context']['inputs']['GH_PATH_SOURCE'] == 'unset' and 'GH_PATH' not in last_diagnostic()['host_context']['inputs'])
     verify('explicit self-path is preserved', gh('self-path', env={'GH_PATH': '/fixture/custom-gh'}).stdout == '/fixture/custom-gh')
-    verify('explicit self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '/fixture/custom-gh' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'environment')
     verify('explicit empty self-path is preserved', gh('self-path', env={'GH_PATH': ''}).stdout == '')
-    verify('explicit empty self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'environment')
     verify('self-path alias removed', gh('alias', 'delete', 'self-path').returncode == 0)
     verify('real auth status ignores hidden tokenless registrations', gh('auth', 'status').returncode == 0)
     verify('unchanged invocation preserves exact dotfiles registrations', saved() == registrations and no_forwarded_saved())
-    decisions = last_diagnostic()['hosts']
-    verify('registration forwarding retained in diagnostics', decisions and all(h['source'] == 'forwarded' and h.get('account_preferences') and h.get('token_probe') for h in decisions) and decisions[1].get('same_user') and not decisions[2].get('same_user'))
-    verify('registration restoration retained in diagnostics', all(r['outcome'] == 'preferences_restored' for r in last_diagnostic()['writeback']['restorations']))
     r = gh('auth', 'logout', '--hostname', HOSTS[2], '--user', 'host-user')
     verify('forwarded logout preserves hidden dotfiles host', r.returncode == 0 and saved() == registrations and api(HOSTS[2]))
     r = gh('config', 'set', 'git_protocol', 'https', '--host', HOSTS[2])
@@ -223,10 +274,10 @@ def check():
     verify('all hosts forwarded through real RPC and HTTP relay', all(api(h) for h in HOSTS))
     verify('real auth status', gh('auth', 'status').returncode == 0)
     verify('forwarding never saved', no_forwarded_saved())
-    verify('unchanged authentication run recorded without user delta', not last_diagnostic()['writeback'].get('changes'))
     r = gh('api', 'user', '--jq', '.login', env={'GH_HOST': HOSTS[2]})
     verify('gh chooses GH_HOST', r.returncode == 0 and r.stdout.strip() == 'host-user')
-    verify('explicit invalid GH_TOKEN never falls back', gh('api', 'user', env={'GH_TOKEN': secrets[HOSTS[0]]['invalid']}).returncode != 0)
+    r = gh('api', 'user', env={'GH_TOKEN': secrets[HOSTS[0]]['invalid'], 'DEVSY_LOG_LEVEL': 'debug'})
+    verify('explicit invalid GH_TOKEN never falls back', r.returncode != 0 and 'gh relay: authentication source' in r.stderr and 'environment' in r.stderr)
     verify('explicit invalid GITHUB_TOKEN never falls back', gh('api', 'user', env={'GITHUB_TOKEN': secrets[HOSTS[0]]['invalid']}).returncode != 0)
     verify('explicit enterprise environment never falls back', gh('api', 'user', '--hostname', HOSTS[1], env={'GH_ENTERPRISE_TOKEN': secrets[HOSTS[1]]['invalid']}).returncode != 0)
     r = gh('auth', 'login', '--hostname', HOSTS[0], '--with-token', '--insecure-storage', token=secrets[HOSTS[0]]['forwarded'])
@@ -237,6 +288,8 @@ def check():
     verify('logout refreshed credential', gh('auth', 'logout', '--hostname', HOSTS[0], '--user', 'host-user').returncode == 0 and api(HOSTS[0]))
     r = gh('auth', 'login', '--hostname', HOSTS[0], '--with-token', '--insecure-storage', token=secrets[HOSTS[0]]['local'])
     verify('different token local login persists', r.returncode == 0 and secrets[HOSTS[0]]['local'] in saved() and api(HOSTS[0], 'local-user'))
+    r = gh('api', 'user', '--jq', '.login', env={'DEVSY_LOG_LEVEL': 'debug'})
+    verify('local authentication preference explained at debug level', r.returncode == 0 and r.stdout == 'local-user\n' and 'gh relay: authentication source' in r.stderr and 'local_config' in r.stderr)
     local_text = saved()
     (original / 'hosts.yml').write_text(local_text.replace(secrets[HOSTS[0]]['local'], secrets[HOSTS[0]]['invalid']))
     verify('invalid local credential never falls back', not api(HOSTS[0]))
@@ -246,24 +299,25 @@ def check():
 
     r = gh('auth', 'login', '--hostname', HOSTS[1], '--with-token', token=secrets[HOSTS[1]]['local'])
     verify('keyring login succeeds without plaintext token', r.returncode == 0 and secrets[HOSTS[1]]['local'] not in saved() and api(HOSTS[1], 'local-user'))
-    verify('existing keyring credential excluded from forwarding', last_diagnostic()['hosts'][1]['source'] == 'keyring')
-    verify('nested lookup preserves keyring authentication', nested_api(HOSTS[1], 'local-user') and last_diagnostic()['hosts'][1]['source'] == 'keyring')
-    verify('unavailable keyring backend follows gh no-token result', api(HOSTS[1], env={'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/nonexistent'}) and last_diagnostic()['hosts'][1]['source'] == 'forwarded')
+    r = gh('api', 'user', '--hostname', HOSTS[1], '--jq', '.login', env={'DEVSY_LOG_LEVEL': 'debug'})
+    verify('existing keyring credential excluded from forwarding', r.returncode == 0 and r.stdout.strip() == 'local-user' and 'gh relay: authentication source' in r.stderr and 'keyring' in r.stderr)
+    verify('nested lookup preserves keyring authentication', nested_api(HOSTS[1], 'local-user'))
+    verify('unavailable keyring backend follows gh no-token result', api(HOSTS[1], env={'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/nonexistent'}))
     verify('unavailable backend leaves local keyring intact', api(HOSTS[1], 'local-user'))
     revoked = ROOT / 'revoke-local'
     revoked.touch()
     try:
-        verify('expired keyring credential never falls back', not api(HOSTS[1]) and last_diagnostic()['hosts'][1]['source'] == 'keyring')
-        verify('nested expired keyring credential never falls back', not nested_api(HOSTS[1]) and last_diagnostic()['hosts'][1]['source'] == 'keyring')
+        verify('expired keyring credential never falls back', not api(HOSTS[1]))
+        verify('nested expired keyring credential never falls back', not nested_api(HOSTS[1]))
     finally:
         revoked.unlink()
     forbidden = ROOT / 'forbid-local'
     forbidden.touch()
     try:
         r = gh('api', 'repos/fixture/private', '--hostname', HOSTS[1])
-        verify('insufficient keyring permission never falls back', r.returncode != 0 and '403' in r.stderr and last_diagnostic()['hosts'][1]['source'] == 'keyring')
+        verify('insufficient keyring permission never falls back', r.returncode != 0 and '403' in r.stderr)
         r = nested_gh('api', 'repos/fixture/private', '--hostname', HOSTS[1])
-        verify('nested insufficient keyring permission never falls back', r.returncode != 0 and '403' in r.stderr and last_diagnostic()['hosts'][1]['source'] == 'keyring')
+        verify('nested insufficient keyring permission never falls back', r.returncode != 0 and '403' in r.stderr)
     finally:
         forbidden.unlink()
     r = gh('auth', 'status', '--hostname', HOSTS[1])
@@ -306,8 +360,6 @@ def check():
         target.write_text(target.read_text().replace('editor: nano', 'editor: emacs') + '\nprompt: disabled\n')
         release.touch()
         p.communicate(timeout=20)
-        changes = last_diagnostic()['writeback']['changes']
-        verify('successful current-wins merge recorded', changes.get('config.editor', {}).get('current_wins') == 1 and last_diagnostic()['writeback']['written_files'] > 0)
         verify('parallel and dotfiles changes survive', p.returncode == 0 and gh('config', 'get', 'editor').stdout.strip() == 'pending' and gh('config', 'get', 'pager').stdout.strip() == 'less' and gh('config', 'get', 'prompt').stdout.strip() == 'disabled' and config.is_symlink())
     finally:
         if p.poll() is None:
@@ -334,17 +386,18 @@ def check():
         latest = target.read_text()
         target.write_text('[broken yaml')
         release.touch()
-        p.communicate(timeout=20)
+        _, writeback_stderr = p.communicate(timeout=20)
+        stderr_outputs.append(writeback_stderr.decode())
         verify('writeback failure does not change real gh exit', p.returncode == 0)
-        diagnostic = last_diagnostic()
-        verify('writeback schema failure retained in diagnostics', diagnostic['stage'] == 'writeback_pending' and any(op['name'] == 'config.merge' and op.get('error_type') == 'schema_invalid' for op in diagnostic['operations']))
+        verify('writeback failure emits actionable error', 'gh relay: configuration writeback pending' in writeback_stderr.decode() and 'schema_invalid' in writeback_stderr.decode())
     finally:
         if latest is not None:
             target.write_text(latest)
         if p.poll() is None:
             os.killpg(p.pid, signal.SIGKILL)
             p.communicate()
-    verify('pending writeback recovered after original repaired', gh('config', 'get', 'editor').stdout.strip() == 'pending')
+    r = gh('config', 'get', 'editor', env={'DEVSY_LOG_LEVEL': 'debug'})
+    verify('pending writeback recovered after original repaired', r.returncode == 0 and r.stdout.strip() == 'pending' and 'gh relay: configuration recovered' in r.stderr)
 
 
     ready.unlink()
@@ -372,11 +425,12 @@ def check():
     try:
         hp.write_text('{}\n')
         r = gh('config', 'get', 'editor')
-        first = last_diagnostic()
+        verify('no host accounts fall back without warning', r.returncode == 0 and 'gh relay:' not in r.stderr)
+        debug = gh('config', 'get', 'editor', env={'DEVSY_LOG_LEVEL': 'debug'})
+        verify('no host accounts explained at debug level', debug.returncode == 0 and 'gh relay: host authentication' in debug.stderr and 'no_active_accounts' in debug.stderr)
         hp.write_text('[broken yaml')
         other = gh('config', 'get', 'editor')
-        second = last_diagnostic()
-        verify('same exit distinguishes host authentication failures', r.returncode == other.returncode == 0 and first['host_status'] == 'no_active_accounts' and second['host_status'] == 'config_decode_failed')
+        verify('host authentication failure warns without changing gh exit', other.returncode == 0 and 'gh relay: forwarding unavailable' in other.stderr and 'config_decode_failed' in other.stderr)
     finally:
         hp.write_text(host_before)
     text = hp.read_text().replace('host-user', 'second-user')
@@ -390,23 +444,8 @@ def check():
     verify('local config dir override', gh('config', 'set', 'editor', 'emacs', env={'GH_CONFIG_DIR': '/fixture/custom-gh'}).returncode == 0 and (ROOT / 'custom-gh' / 'config.yml').exists())
     verify('XDG config location', gh('config', 'set', 'editor', 'emacs', env={'GH_CONFIG_DIR': '', 'XDG_CONFIG_HOME': '/fixture/custom-xdg'}).returncode == 0 and (ROOT / 'custom-xdg' / 'gh' / 'config.yml').exists())
     verify('HOME config location', gh('config', 'set', 'editor', 'emacs', env={'GH_CONFIG_DIR': '', 'XDG_CONFIG_HOME': '', 'HOME': '/fixture/custom-home'}).returncode == 0 and (ROOT / 'custom-home' / '.config' / 'gh' / 'config.yml').exists())
-    records = list((ROOT / 'guest-cache' / 'devsy' / 'gh-relay' / 'diagnostics').glob('*.json'))
-    verify('bounded local diagnostics', 0 < len(records) <= 64)
-    verify('diagnostics contain no credential values', all(all(secret not in f.read_text() for values in secrets.values() for secret in values.values()) for f in records))
-    before = {f.name for f in records}
-    r = gh('config', 'set', 'browser', '/bin/true', env={'DEVSY_GH_DIAGNOSTICS': 'false'})
-    verify('disabled diagnostics preserve configuration writes', r.returncode == 0 and gh('config', 'get', 'browser', env={'DEVSY_GH_DIAGNOSTICS': 'false'}).stdout.strip() == '/bin/true')
-    verify('diagnostics opt out', api(HOSTS[2], 'second-user', env={'DEVSY_GH_DIAGNOSTICS': 'false'}) and before == {f.name for f in records[0].parent.glob('*.json')})
-
-    diagnostic_dir = ROOT / 'guest-cache' / 'devsy' / 'gh-relay' / 'diagnostics'
-    held = diagnostic_dir.with_name('held-diagnostics')
-    diagnostic_dir.rename(held)
-    diagnostic_dir.symlink_to('/proc/1')
-    try:
-        verify('recording failure does not change authentication', api(HOSTS[2], 'second-user'))
-    finally:
-        diagnostic_dir.unlink()
-        held.rename(diagnostic_dir)
+    verify('no diagnostic files created', not (ROOT / 'guest-cache' / 'devsy' / 'gh-relay' / 'diagnostics').exists())
+    verify('stderr logs contain no credential values', all(secret not in output for output in stderr_outputs for values in secrets.values() for secret in values.values()))
     verify('normal sessions cleaned', not list((ROOT / 'guest-cache' / 'devsy' / 'gh-relay').glob('session-*')))
 
     ready.unlink()
@@ -422,5 +461,7 @@ def check():
 
 if sys.argv[1] == 'server':
     server()
+elif sys.argv[1] == 'probe':
+    probe()
 else:
     check()

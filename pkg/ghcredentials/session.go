@@ -14,17 +14,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devsy-org/devsy/pkg/log"
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 )
 
 type session struct {
-	Original  string    `json:"original"`
-	Accounts  []Account `json:"accounts"`
-	dir       string
-	lock      *ownerLock
-	decisions []hostDecision
-	writeback *writebackSummary
+	Original string    `json:"original"`
+	Accounts []Account `json:"accounts"`
+	dir      string
+	lock     *ownerLock
 }
 
 func sessionRoot() (string, error) {
@@ -61,7 +60,7 @@ func startSession(ctx context.Context, original string, accounts []Account) (*se
 		return nil, boundary("session.catalog_lock", err)
 	}
 	defer func() { _ = l.Close() }()
-	recoverSessions(ctx, root, false)
+	recoverSessions(ctx, root)
 	return newSession(ctx, root, original, accounts)
 }
 
@@ -155,60 +154,45 @@ func copyEntry(ctx context.Context, src, dst string, depth int) error {
 	return os.WriteFile(dst, data, mode)
 }
 
-type recoveryDecision struct {
-	Session   string            `json:"session"`
-	ConfigDir string            `json:"config_dir,omitempty"`
-	Outcome   string            `json:"outcome"`
-	Operation string            `json:"operation,omitempty"`
-	ErrorType string            `json:"error_type,omitempty"`
-	Writeback *writebackSummary `json:"writeback,omitempty"`
-}
-
-func recoverSessions(ctx context.Context, root string, recording bool) []recoveryDecision {
-	var results []recoveryDecision
-	entries, _ := os.ReadDir(root)
+func recoverSessions(ctx context.Context, root string) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		logFailure("gh relay: recovery pending", "recovery.list", err, true)
+		return
+	}
 	for _, e := range entries {
 		if e.IsDir() && strings.HasPrefix(e.Name(), "session-") {
-			results = append(results, recoverSession(ctx, filepath.Join(root, e.Name()), recording))
+			dir := filepath.Join(root, e.Name())
+			if err := recoverSession(ctx, dir); err != nil {
+				logFailure("gh relay: recovery pending", "recovery.writeback", err, true)
+			}
 		}
 	}
-	return results
 }
 
-func recoverSession(ctx context.Context, dir string, recording bool) recoveryDecision {
-	result := recoveryDecision{Session: filepath.Base(dir), Outcome: "active"}
+func recoverSession(ctx context.Context, dir string) error {
 	owner, ok, err := tryOwner(filepath.Join(dir, "owner.lock"))
 	if err != nil {
-		return recoveryFailure(result, "recovery.owner_lock", err)
+		return boundary("recovery.owner_lock", err)
 	}
 	if !ok {
-		return result
+		return nil
 	}
 	defer func() { _ = owner.Close() }()
-	return recoverUnlocked(ctx, dir, recording)
-}
-
-func recoverUnlocked(ctx context.Context, dir string, recording bool) recoveryDecision {
-	result := recoveryDecision{Session: filepath.Base(dir), Outcome: "recovered"}
 	old, err := loadSession(dir)
 	if err != nil {
-		return recoveryFailure(result, "recovery.metadata", err)
+		return boundary("recovery.metadata", err)
 	}
-	if old == nil {
-		_ = os.RemoveAll(dir)
-		return result
+	if old != nil {
+		if err := old.sync(ctx); err != nil {
+			return err
+		}
 	}
-	result.ConfigDir = old.Original
-	if recording {
-		old.writeback = &writebackSummary{}
+	if err := os.RemoveAll(dir); err != nil {
+		return boundary("recovery.cleanup", err)
 	}
-	err = old.sync(ctx)
-	result.Writeback = old.writeback
-	if err != nil {
-		return recoveryFailure(result, "recovery.writeback", err)
-	}
-	_ = os.RemoveAll(dir)
-	return result
+	log.Debug("gh relay: configuration recovered")
+	return nil
 }
 
 func loadSession(dir string) (*session, error) {
@@ -225,12 +209,6 @@ func loadSession(dir string) (*session, error) {
 	}
 	old.dir = dir
 	return &old, nil
-}
-
-func recoveryFailure(result recoveryDecision, name string, err error) recoveryDecision {
-	result.Outcome = "pending"
-	result.Operation, result.ErrorType = describeError(name, err)
-	return result
 }
 
 func (s *session) save() error {
@@ -308,10 +286,10 @@ func (s *session) overlay(
 		if err != nil {
 			return boundary("config.probe_snapshot", err)
 		}
-		decision := a.inject(ctx, binary, replaceEnv(env, "GH_CONFIG_DIR", probe), hosts)
+		source := a.inject(ctx, binary, replaceEnv(env, "GH_CONFIG_DIR", probe), hosts)
 		_ = os.RemoveAll(probe)
-		s.decisions = append(s.decisions, decision)
-		if decision.Source == "forwarded" {
+		log.Debugw("gh relay: authentication source", "host", a.Host, "source", source)
+		if source == "forwarded" {
 			injected = append(injected, a)
 		}
 	}
@@ -356,13 +334,7 @@ func (s *session) strip(before, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	for _, a := range s.Accounts {
-		outcome := stripAccount(hosts, get(original, a.Host), a)
-		if s.writeback != nil {
-			s.writeback.Restorations = append(
-				s.writeback.Restorations,
-				hostRestoration{Host: a.Host, Outcome: outcome},
-			)
-		}
+		stripAccount(hosts, get(original, a.Host), a)
 	}
 	return yaml.Marshal(hosts)
 }
@@ -456,38 +428,32 @@ func (a Account) inject(
 	binary string,
 	env []string,
 	hosts *yaml.Node,
-) hostDecision {
+) string {
 	h := get(hosts, a.Host)
-	decision := hostDecision{Host: a.Host, Source: "invalid_account"}
 	if !a.valid() {
-		return decision
-	}
-	decision.Preferences = get(h, "user") != nil || get(h, "users") != nil
-	if user := get(h, "user"); user != nil {
-		decision.SameUser = user.Value == a.User
+		return "invalid_account"
 	}
 	if source := localAuthSource(h); source != "" {
-		decision.Source = source
-		return decision
+		return source
 	}
-	decision.ProbeMode = "local_only"
 	token, err := resolveToken(ctx, binary, a.Host, env)
-	decision.Probe = "empty"
-	if err != nil {
-		decision.Probe = errorKind(err)
-		if !noTokenResult(err) {
-			decision.Source = "local_lookup_failed"
-			return decision
-		}
+	if err != nil && !noTokenResult(err) {
+		log.Warnw(
+			"gh relay: forwarding unavailable",
+			"operation",
+			"local.token_lookup",
+			"host",
+			a.Host,
+			"error_type",
+			errorKind(err),
+		)
+		return "local_lookup_failed"
 	}
 	if token != "" {
-		decision.Probe = "token_returned"
-		decision.Source = localTokenSource(token, env)
-		return decision
+		return localTokenSource(token, env)
 	}
 	a.overlay(hosts)
-	decision.Source = "forwarded"
-	return decision
+	return "forwarded"
 }
 
 // gh auth token reports an absent token as exit 1. It also collapses keyring
@@ -514,11 +480,11 @@ func (a Account) overlay(hosts *yaml.Node) {
 	put(h, "users", users)
 }
 
-func stripAccount(hosts, original *yaml.Node, a Account) string {
+func stripAccount(hosts, original *yaml.Node, a Account) {
 	h := get(hosts, a.Host)
 	if h == nil {
 		put(hosts, a.Host, original)
-		return "original_host_restored"
+		return
 	}
 	u := get(h, "users")
 	account := get(u, a.User)
@@ -542,10 +508,6 @@ func stripAccount(hosts, original *yaml.Node, a Account) string {
 	if len(h.Content) == 0 {
 		put(hosts, a.Host, nil)
 	}
-	if keyringLogin {
-		return "keyring_registration"
-	}
-	return "preferences_restored"
 }
 
 func removeForwardedToken(n, original *yaml.Node, token string) {
@@ -603,7 +565,6 @@ func (s *session) syncFile(name string) error {
 	}
 
 	if bytes.Equal(before, after) {
-		s.writeback.unchanged()
 		return nil
 	}
 	path := filepath.Join(s.Original, name)
@@ -619,14 +580,10 @@ func (s *session) syncFile(name string) error {
 		return nil
 	}
 	err = s.saveOriginal(name, after)
-	s.writeback.written(err)
 	return boundary("config.write", err)
 }
 
 func (s *session) mergeFile(name string, before, after, latest []byte) ([]byte, error) {
-	if err := s.writeback.inspect(name, before, after, latest); err != nil {
-		return nil, err
-	}
 	if name == hostsFile || name == configFile {
 		return mergeYAML(before, after, latest)
 	}

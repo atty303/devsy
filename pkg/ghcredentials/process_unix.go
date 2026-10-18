@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+
+	"github.com/devsy-org/devsy/pkg/log"
 )
 
-func runGH(binary string, args, env []string, owner *os.File) processResult {
+func runGH(binary string, args, env []string, owner *os.File) int {
 	//nolint:gosec // The user chose this executable and these unchanged arguments.
 	cmd := exec.Command(binary, args...)
 	cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = env, os.Stdin, os.Stdout, os.Stderr
@@ -20,22 +22,19 @@ func runGH(binary string, args, env []string, owner *os.File) processResult {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
 	if err := cmd.Start(); err != nil {
-		return processResult{Code: 126, ErrorType: errorKind(err)}
+		log.Errorw("gh relay: executable unavailable", "error_type", errorKind(err))
+		return 126
 	}
 	done := make(chan struct{})
 	defer close(done)
 	go forwardSignals(cmd.Process, signals, done)
 	if err := cmd.Wait(); err != nil {
 		if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-			return processResult{
-				Code:      128 + int(status.Signal()),
-				Signal:    int(status.Signal()),
-				ErrorType: "signal",
-			}
+			return 128 + int(status.Signal())
 		}
-		return processResult{Code: cmd.ProcessState.ExitCode(), ErrorType: "exit_nonzero"}
+		return cmd.ProcessState.ExitCode()
 	}
-	return processResult{}
+	return 0
 }
 
 func forwardSignals(process *os.Process, signals <-chan os.Signal, done <-chan struct{}) {

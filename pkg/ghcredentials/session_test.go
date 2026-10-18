@@ -35,7 +35,6 @@ func TestSessionMergePreservesDotfilesAndConcurrentChanges(t *testing.T) {
 	s, err := startSession(context.Background(), original, nil)
 	require.NoError(t, err)
 	writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\npager: less\n")
-	s.writeback = &writebackSummary{}
 	writeTestFile(t, target, "editor: emacs\npager: cat\nprompt: disabled\n")
 	require.NoError(t, s.finish(context.Background()))
 	link, err := os.Readlink(filepath.Join(original, configFile))
@@ -48,9 +47,6 @@ func TestSessionMergePreservesDotfilesAndConcurrentChanges(t *testing.T) {
 	require.Equal(t, "nano", get(n, "editor").Value)
 	require.Equal(t, "cat", get(n, "pager").Value)
 	require.Equal(t, "disabled", get(n, "prompt").Value)
-	require.Equal(t, 1, s.writeback.WrittenFiles)
-	require.Equal(t, changeCount{Modified: 1, Conflicts: 1}, s.writeback.Changes["config.editor"])
-	require.NotContains(t, s.writeback.Changes, "config.pager")
 }
 
 func TestSessionConcurrentInvocationsAndRecovery(t *testing.T) {
@@ -163,11 +159,6 @@ func TestDanglingDotfilesSymlinkKeepsPendingChanges(t *testing.T) {
 	require.NoError(t, c.finish(context.Background()))
 }
 
-func TestDisabledWritebackDiagnosticsDoNotParseConfiguration(t *testing.T) {
-	var summary *writebackSummary
-	require.NoError(t, summary.inspect(configFile, []byte("["), []byte("["), []byte("[")))
-}
-
 func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
 	for _, tc := range []struct {
 		user, tokenField, userBody string
@@ -191,9 +182,6 @@ func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
 			t.Cleanup(func() { _ = s.lock.Close() })
 			env := []string{"HOME=" + root, "GH_CONFIG_DIR=" + original, testPathEnv}
 			require.NoError(t, s.inject(context.Background(), "/usr/bin/false", env))
-			require.Equal(t, "forwarded", s.decisions[0].Source)
-			require.True(t, s.decisions[0].Preferences)
-			require.Equal(t, tc.user == a.User, s.decisions[0].SameUser)
 			data, err := readFile(filepath.Join(s.work(), hostsFile))
 			require.NoError(t, err)
 			n, err := decode(data)
@@ -269,8 +257,7 @@ func TestTokenLookupTimeoutDoesNotAllowForwarding(t *testing.T) {
 	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
 	hosts := mapping()
 	decision := a.inject(ctx, "/usr/bin/false", []string{testPathEnv}, hosts)
-	require.Equal(t, "local_lookup_failed", decision.Source)
-	require.Equal(t, "timeout", decision.Probe)
+	require.Equal(t, "local_lookup_failed", decision)
 	require.Nil(t, get(hosts, a.Host))
 }
 
