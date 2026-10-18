@@ -17,8 +17,6 @@ type Account struct {
 	Token string `json:"token"`
 }
 
-// HostAccounts reads active accounts through the host's unmodified gh. It never
-// runs login, refresh, switch, logout, or an API request.
 func HostAccounts(ctx context.Context) (result HostResult) {
 	started := time.Now()
 	info := HostContext{Inputs: credentialInputs()}
@@ -33,7 +31,15 @@ func HostAccounts(ctx context.Context) (result HostResult) {
 		return HostResult{Status: "config_path_failed"}
 	}
 	info.ConfigDir = dir
-	b, err := readFile(filepath.Join(dir, hostsFile))
+	probe, err := os.MkdirTemp("", "devsy-gh-host-")
+	if err != nil {
+		return HostResult{Status: "config_snapshot_" + errorKind(err)}
+	}
+	defer func() { _ = os.RemoveAll(probe) }()
+	if err := copyConfigFiles(dir, probe); err != nil {
+		return HostResult{Status: "config_snapshot_" + errorKind(err)}
+	}
+	b, err := readFile(filepath.Join(probe, hostsFile))
 	if err != nil {
 		return HostResult{Status: "config_read_" + errorKind(err)}
 	}
@@ -41,10 +47,15 @@ func HostAccounts(ctx context.Context) (result HostResult) {
 	if err != nil {
 		return HostResult{Status: "config_decode_failed"}
 	}
-	return collectHostAccounts(ctx, binary, hosts)
+	return collectHostAccounts(ctx, binary, hosts, replaceEnv(os.Environ(), "GH_CONFIG_DIR", probe))
 }
 
-func collectHostAccounts(ctx context.Context, binary string, hosts *yaml.Node) HostResult {
+func collectHostAccounts(
+	ctx context.Context,
+	binary string,
+	hosts *yaml.Node,
+	env []string,
+) HostResult {
 	result := HostResult{Status: "no_active_accounts"}
 	for i := 0; i+1 < len(hosts.Content); i += 2 {
 		host := hosts.Content[i].Value
@@ -56,7 +67,7 @@ func collectHostAccounts(ctx context.Context, binary string, hosts *yaml.Node) H
 			)
 			continue
 		}
-		token, err := resolveToken(ctx, binary, host, os.Environ())
+		token, err := resolveToken(ctx, binary, host, env)
 		if err != nil {
 			result.Decisions = append(
 				result.Decisions,
@@ -75,11 +86,6 @@ func collectHostAccounts(ctx context.Context, binary string, hosts *yaml.Node) H
 		result.Status = "available"
 	}
 	return result
-}
-
-func tokenForHost(ctx context.Context, binary, host string, env []string) string {
-	token, _ := resolveToken(ctx, binary, host, env)
-	return token
 }
 
 func resolveToken(ctx context.Context, binary, host string, env []string) (string, error) {

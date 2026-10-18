@@ -30,8 +30,6 @@ import (
 //go:embed testdata/Dockerfile testdata/fixture.py
 var fixtureFiles embed.FS
 
-// Run with task cli:test:gh-relay. All authentication is fictional, API traffic
-// stays in a network-disabled container, and the host gh reads a disposable config.
 func TestRealGitHubCLI(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
@@ -177,9 +175,8 @@ func prepareHostAuthentication(t *testing.T, dir string) {
 		accounts[host] = v
 		fmt.Fprintf(
 			&hosts,
-			"%s:\n    user: host-user\n    oauth_token: %s\n    users:\n        host-user:\n            oauth_token: %s\n",
+			"%s:\n    user: host-user\n    oauth_token: %s\n",
 			host,
-			v.Forwarded,
 			v.Forwarded,
 		)
 	}

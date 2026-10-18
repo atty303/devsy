@@ -10,7 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testPathEnv = "PATH=/usr/bin:/bin"
+const (
+	testPathEnv        = "PATH=/usr/bin:/bin"
+	testForwardedToken = "dummy-forwarded-value"
+	testHost           = "github.example"
+	testUser           = "relay-user"
+)
 
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
@@ -31,7 +36,6 @@ func TestSessionMergePreservesDotfilesAndConcurrentChanges(t *testing.T) {
 	require.NoError(t, err)
 	writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\npager: less\n")
 	s.writeback = &writebackSummary{}
-	// Dotfiles reapplies a new original during the command.
 	writeTestFile(t, target, "editor: emacs\npager: cat\nprompt: disabled\n")
 	require.NoError(t, s.finish(context.Background()))
 	link, err := os.Readlink(filepath.Join(original, configFile))
@@ -62,7 +66,6 @@ func TestSessionConcurrentInvocationsAndRecovery(t *testing.T) {
 	writeTestFile(t, filepath.Join(a.work(), configFile), "editor: nano\npager: less\n")
 	writeTestFile(t, filepath.Join(b.work(), configFile), "editor: vi\npager: cat\n")
 	require.NoError(t, a.finish(context.Background()))
-	// Simulate a killed wrapper releasing its ownership lock without cleanup.
 	require.NoError(t, b.lock.Close())
 	c, err := startSession(context.Background(), original, nil)
 	require.NoError(t, err)
@@ -76,7 +79,7 @@ func TestSessionConcurrentInvocationsAndRecovery(t *testing.T) {
 }
 
 func TestStripForwardedCredentialsAndPreserveLocalLogin(t *testing.T) {
-	a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
+	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
 	s := &session{Accounts: []Account{a}}
 	for _, tc := range []struct {
 		name, input    string
@@ -170,9 +173,9 @@ func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
 	for _, tc := range []struct {
 		user, tokenField, userBody string
 	}{
-		{"relay-user", "", "{}"},
+		{testUser, "", "{}"},
 		{"dotfiles-user", "", ""},
-		{"relay-user", "  oauth_token: \"\"\n", "\n      oauth_token: \"\""},
+		{testUser, "  oauth_token: \"\"\n", "\n      oauth_token: \"\""},
 		{"dotfiles-user", "  oauth_token:\n", "\n      oauth_token:"},
 	} {
 		t.Run(tc.user+tc.tokenField, func(t *testing.T) {
@@ -183,7 +186,7 @@ func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
 			before := "github.example:\n  git_protocol: https\n  user: " + tc.user + "\n" + tc.tokenField +
 				"  users:\n    " + tc.user + ": " + tc.userBody + "\n    other-user:\n"
 			writeTestFile(t, filepath.Join(original, hostsFile), before)
-			a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
+			a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
 			s, err := startSession(context.Background(), original, []Account{a})
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = s.lock.Close() })
@@ -224,7 +227,7 @@ exit 1
 	// resolveToken passes "auth" as the first argument, so sh reads this fixture.
 	t.Chdir(root)
 	s, err := startSession(context.Background(), original, []Account{
-		{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"},
+		{Host: testHost, User: testUser, Token: testForwardedToken},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.lock.Close() })
@@ -249,7 +252,7 @@ func TestForwardedLogoutRestoresHiddenPreferences(t *testing.T) {
 	)
 	s := &session{
 		Accounts: []Account{
-			{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"},
+			{Host: testHost, User: testUser, Token: testForwardedToken},
 		},
 	}
 	after, err := s.strip(before, []byte("{}\n"))
@@ -264,7 +267,7 @@ func TestForwardedLogoutRestoresHiddenPreferences(t *testing.T) {
 func TestTokenLookupTimeoutDoesNotAllowForwarding(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	a := Account{Host: "github.example", User: "relay-user", Token: "dummy-forwarded-value"}
+	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
 	hosts := mapping()
 	decision := a.inject(ctx, "/usr/bin/false", []string{testPathEnv}, hosts)
 	require.Equal(t, "local_lookup_failed", decision.Source)
@@ -287,7 +290,7 @@ printf '%s' "$GH_TOKEN"
 		"DEVSY_GH_SESSION=existing-session",
 		"GH_TOKEN=dummy-local-value",
 	}
-	token, err := resolveToken(context.Background(), "/bin/sh", "github.example", env)
+	token, err := resolveToken(context.Background(), "/bin/sh", testHost, env)
 	require.NoError(t, err)
 	require.True(t, "GH_TOKEN="+token == env[3], "local environment authentication changed")
 	require.Equal(t, "DEVSY_GH_AUTH_PROBE=0", env[1])

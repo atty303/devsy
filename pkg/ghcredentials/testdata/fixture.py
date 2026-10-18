@@ -95,6 +95,7 @@ def check():
         r = gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
         ok = r.returncode == 0 and r.stdout.strip() == expected
         return ok
+    host_before = (ROOT / 'host-gh' / 'hosts.yml').read_bytes()
     original = ROOT / 'guest-gh'
     original.mkdir(exist_ok=True)
     def saved():
@@ -254,7 +255,6 @@ def check():
     verify('extension streams and failure exit pass unchanged', r.returncode == 7 and r.stdout == 'host-user\nextension-out\n' and r.stderr == 'extension-err\n')
     verify('extension change persists after failure', gh('config', 'get', 'pager').stdout.strip() == 'cat')
 
-    # Symlinked config and dotfiles replacement between snapshot and writeback.
     config = original / 'config.yml'
     target = ROOT / 'dotfiles-config.yml'
     config.rename(target)
@@ -296,7 +296,6 @@ def check():
     verify('next invocation recovers killed wrapper mutation', gh('config', 'get', 'editor').stdout.strip() == 'pending')
     verify('recovered session contains no forwarded credentials', no_forwarded_saved())
 
-    # A writeback failure must preserve gh's exit status and retain the changes.
     ready.unlink()
     verify('prepare pending writeback', gh('config', 'set', 'editor', 'vi').returncode == 0)
     p = pending()
@@ -319,7 +318,6 @@ def check():
     verify('pending writeback recovered after original repaired', gh('config', 'get', 'editor').stdout.strip() == 'pending')
 
 
-    # Killing only the wrapper must not reap the still-running real gh.
     ready.unlink()
     release.unlink()
     verify('prepare live-child ownership', gh('config', 'set', 'editor', 'vi').returncode == 0)
@@ -337,9 +335,8 @@ def check():
             os.killpg(p.pid, signal.SIGKILL)
             p.communicate()
 
-    verify('host auth unchanged by guest operations', all(v['forwarded'] in (ROOT / 'host-gh' / 'hosts.yml').read_text() for v in secrets.values()))
+    verify('host auth unchanged by guest operations', (ROOT / 'host-gh' / 'hosts.yml').read_bytes() == host_before and not (ROOT / 'host-gh' / 'config.yml').exists())
 
-    # A host active-account change must be observed on the very next invocation.
     hp = ROOT / 'host-gh' / 'hosts.yml'
 
     host_before = hp.read_text()
@@ -383,7 +380,6 @@ def check():
         held.rename(diagnostic_dir)
     verify('normal sessions cleaned', not list((ROOT / 'guest-cache' / 'devsy' / 'gh-relay').glob('session-*')))
 
-    # Leave one interrupted change for the caller to recover after stopping RPC.
     ready.unlink()
     release.unlink()
     verify('prepare relay-loss recovery', gh('config', 'set', 'editor', 'vi').returncode == 0)

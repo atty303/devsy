@@ -19,8 +19,6 @@ const (
 	authProbeEnv = "DEVSY_GH_AUTH_PROBE"
 )
 
-// Run is the wrapper entry point. args starts with the wrapper's path, followed
-// by untouched gh arguments. It bypasses Devsy's CLI/env/log initialization.
 func Run(args []string) int {
 	if len(args) == 0 {
 		return 127

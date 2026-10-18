@@ -120,8 +120,6 @@ func equal(a, b *yaml.Node) bool {
 	return reflect.DeepEqual(av, bv)
 }
 
-// merge applies only this invocation's changes to the most recent original.
-// Mapping entries are independent; sequences and scalars are single items.
 func merge(before, after, latest *yaml.Node) *yaml.Node {
 	if equal(before, after) {
 		return latest
