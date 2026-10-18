@@ -68,6 +68,10 @@ func beginDiagnostic(binary string) *diagnostic {
 	d.path = f.Name()
 	_ = f.Close()
 	d.Inputs = credentialInputs()
+	if _, explicit := os.LookupEnv("GH_PATH"); !explicit {
+		d.Inputs["GH_PATH"] = wrapperPath
+		d.Inputs["GH_PATH_SOURCE"] = "default"
+	}
 	d.save(false)
 	return d
 }
@@ -162,7 +166,11 @@ func (d *diagnostic) observe(name string, started time.Time, err error) {
 }
 
 func credentialInputs() map[string]string {
-	inputs := map[string]string{}
+	inputs := map[string]string{"GH_PATH_SOURCE": "unset"}
+	if path, explicit := os.LookupEnv("GH_PATH"); explicit {
+		inputs["GH_PATH"] = path
+		inputs["GH_PATH_SOURCE"] = "environment"
+	}
 	for _, name := range []string{
 		"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
 		"GH_HOST", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME", "APPDATA",

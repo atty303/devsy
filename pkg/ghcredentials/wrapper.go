@@ -28,6 +28,9 @@ func Run(args []string) int {
 		return 127
 	}
 	env := os.Environ()
+	if _, explicit := os.LookupEnv("GH_PATH"); !explicit {
+		env = replaceEnv(env, "GH_PATH", wrapperPath)
+	}
 	active := os.Getenv(sessionEnv)
 	// A local lookup may re-enter through another dispatcher. Keep forwarding
 	// disabled throughout that process tree, even if it changes GH_CONFIG_DIR.

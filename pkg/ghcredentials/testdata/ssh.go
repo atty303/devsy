@@ -41,7 +41,7 @@ func run() error {
 		return err
 	}
 	defer func() { _ = session.Close() }()
-	for _, name := range []string{"HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_PROMPT_DISABLED", "GH_BROWSER", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "DBUS_SESSION_BUS_ADDRESS", "DEVSY_GH_DIAGNOSTICS"} {
+	for _, name := range []string{"HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_PATH", "GH_PROMPT_DISABLED", "GH_BROWSER", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "DBUS_SESSION_BUS_ADDRESS", "DEVSY_GH_DIAGNOSTICS"} {
 		if value, ok := os.LookupEnv(name); ok {
 			if err := session.Setenv(name, value); err != nil {
 				return err

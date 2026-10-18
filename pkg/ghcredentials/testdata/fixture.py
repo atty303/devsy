@@ -163,6 +163,28 @@ def check():
     (selected / 'gh').symlink_to('/usr/bin/gh')
     r = subprocess.run(['/usr/local/bin/gh', 'api', 'user', '--hostname', HOSTS[0], '--jq', '.login'], env=dict(os.environ, PATH=str(selected) + ':/usr/local/bin:/usr/bin:/bin'), text=True, capture_output=True, timeout=20)
     verify('repo-selected gh precedes fixed backup', r.returncode == 0 and r.stdout.strip() == 'host-user' and last_diagnostic()['binary'] == str(selected / 'gh'))
+    git_config = Path.home() / '.gitconfig'
+    previous_git_config = git_config.read_bytes() if git_config.exists() else None
+    try:
+        verify('setup-git accepts forwarded authentication', gh('auth', 'setup-git').returncode == 0)
+        helper = subprocess.run(['git', 'config', '--global', '--get-all', 'credential.https://github.com.helper'], text=True, capture_output=True, timeout=20)
+        verify('setup-git persists the relay wrapper', helper.returncode == 0 and '/usr/local/bin/gh auth git-credential' in helper.stdout and 'gh.devsy-original' not in helper.stdout)
+        credentials = subprocess.run(['git', 'credential', 'fill'], input='protocol=https\nhost=github.com\n\n', env=dict(os.environ, GIT_TERMINAL_PROMPT='0'), text=True, capture_output=True, timeout=20)
+        verify('persisted Git helper retrieves forwarded authentication', credentials.returncode == 0 and ('password=' + secrets[HOSTS[0]]['forwarded']) in credentials.stdout)
+    finally:
+        if previous_git_config is None:
+            git_config.unlink(missing_ok=True)
+        else:
+            git_config.write_bytes(previous_git_config)
+    verify('self-path alias saves', gh('alias', 'set', 'self-path', '!printf "%s" "$GH_PATH"').returncode == 0)
+    verify('aliases inherit relay self-path', gh('self-path').stdout == '/usr/local/bin/gh')
+    verify('default self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '/usr/local/bin/gh' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'default')
+    verify('container self-path does not alter host inputs', last_diagnostic()['host_context']['inputs']['GH_PATH_SOURCE'] == 'unset' and 'GH_PATH' not in last_diagnostic()['host_context']['inputs'])
+    verify('explicit self-path is preserved', gh('self-path', env={'GH_PATH': '/fixture/custom-gh'}).stdout == '/fixture/custom-gh')
+    verify('explicit self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '/fixture/custom-gh' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'environment')
+    verify('explicit empty self-path is preserved', gh('self-path', env={'GH_PATH': ''}).stdout == '')
+    verify('explicit empty self-path retained in diagnostics', last_diagnostic()['inputs']['GH_PATH'] == '' and last_diagnostic()['inputs']['GH_PATH_SOURCE'] == 'environment')
+    verify('self-path alias removed', gh('alias', 'delete', 'self-path').returncode == 0)
     verify('real auth status ignores hidden tokenless registrations', gh('auth', 'status').returncode == 0)
     verify('unchanged invocation preserves exact dotfiles registrations', saved() == registrations and no_forwarded_saved())
     decisions = last_diagnostic()['hosts']
