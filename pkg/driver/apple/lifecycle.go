@@ -147,10 +147,7 @@ func (d *appleDriver) RunImageDevContainer(
 		return err
 	}
 
-	args, err := d.buildRunArgs(params)
-	if err != nil {
-		return fmt.Errorf("build apple container arguments: %w", err)
-	}
+	args := d.buildRunArgs(params)
 
 	writer := log.Writer(log.LevelInfo)
 	defer func() { _ = writer.Close() }()
@@ -159,7 +156,7 @@ func (d *appleDriver) RunImageDevContainer(
 		"running apple container command: command=%s, args=%s",
 		d.command, redactArgs(args),
 	)
-	err = d.Apple.RunWithDir(ctx, params.LocalWorkspaceFolder, args,
+	err := d.Apple.RunWithDir(ctx, params.LocalWorkspaceFolder, args,
 		apple.Streams{Stdout: writer, Stderr: writer})
 	if err != nil {
 		return fmt.Errorf("failed to start dev container: %w", err)

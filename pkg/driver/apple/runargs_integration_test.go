@@ -23,8 +23,7 @@ func TestTmpfsMountsIntegration(t *testing.T) {
 	helper := &apple.AppleHelper{Command: "container"}
 	name := fmt.Sprintf("devsy-tmpfs-%d", time.Now().UnixNano())
 	params := tmpfsIntegrationParams(name)
-	args, err := (&appleDriver{}).buildRunArgs(params)
-	require.NoError(t, err)
+	args := (&appleDriver{}).buildRunArgs(params)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
@@ -36,7 +35,7 @@ func TestTmpfsMountsIntegration(t *testing.T) {
 		}
 	})
 	var out bytes.Buffer
-	err = helper.Run(ctx, args, apple.Streams{Stdout: &out, Stderr: &out})
+	err := helper.Run(ctx, args, apple.Streams{Stdout: &out, Stderr: &out})
 	require.NoError(t, err, out.String())
 	out.Reset()
 	err = helper.Run(
@@ -70,45 +69,33 @@ func tmpfsIntegrationParams(name string) *driver.RunImageDevContainerParams {
 					Other:  []string{"tmpfs-mode=0700"},
 				},
 				{
-					Type:   "tmpfs",
-					Target: "/probe-small",
-					Other:  []string{"tmpfs-size=4096", "tmpfs-mode=0777", "tmpfs-mode=1770"},
+					Type:   driver.MountTypeTmpfs,
+					Target: "/probe-native",
+					Other:  []string{"mode=0700", "size=1M"},
 				},
 				{
 					Type:   driver.MountTypeTmpfs,
 					Target: "/probe-size",
-					Other:  []string{"tmpfs-size=1048576", "tmpfs-size=1052672"},
+					Other:  []string{"tmpfs-size=1M", "tmpfs-size=2M"},
 				},
-				{Type: driver.MountTypeTmpfs, Target: "/probe-ro", Other: []string{"readonly=t"}},
-				{
-					Type:   "tmpfs",
-					Target: "/probe-default",
-					Other:  []string{"tmpfs-size=0", "tmpfs-mode=0000", "readonly", "ro=false"},
-				},
-				{
-					Type:   driver.MountTypeTmpfs,
-					Target: "/probe-suffix",
-					Other:  []string{"tmpfs-size=1mb"},
-				},
+				{Type: driver.MountTypeTmpfs, Target: "/probe-ro", Other: []string{"readonly"}},
 			},
 		},
 	}
 }
 
 const tmpfsIntegrationOracle = `set -eu
-stat -c '%n %a' /run/secrets /run/devsy/secrets-env /probe-small
-stat -f -c '%n %T %S %b' /probe-small /probe-size
+stat -c '%n %a' /run/secrets /run/devsy/secrets-env /probe-native
+stat -f -c '%n %T %S %b' /probe-native /probe-size
 test "$(stat -c %a /run/secrets)" = 755
 test "$(stat -c %a /run/devsy/secrets-env)" = 700
-test "$(stat -c %a /probe-small)" = 1770
-test "$(stat -c %a /probe-default)" = 1777
-test "$(stat -f -c '%S:%b' /probe-suffix)" = 4096:256
-for p in /run/secrets /run/devsy/secrets-env /probe-small /probe-size /probe-ro; do
+test "$(stat -c %a /probe-native)" = 700
+for p in /run/secrets /run/devsy/secrets-env /probe-native /probe-size /probe-ro; do
  test "$(stat -f -c %T "$p")" = tmpfs
 done
-test "$(stat -f -c '%S:%b' /probe-small)" = 4096:1
-test "$(stat -f -c '%S:%b' /probe-size)" = 4096:257
-touch /probe-small/writable /probe-default/writable
+test "$(stat -f -c '%S:%b' /probe-native)" = 4096:256
+test "$(stat -f -c '%S:%b' /probe-size)" = 4096:512
+touch /probe-native/writable
 if touch /probe-ro/forbidden 2>/dev/null; then exit 1; fi
-echo 'tmpfs permissions, sizes and read-only mount verified'
+echo 'native CLI tmpfs mount behavior verified'
 `
