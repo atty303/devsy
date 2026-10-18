@@ -90,11 +90,15 @@ def check():
         e = dict(os.environ)
         if env:
             e.update(env)
-        return subprocess.run(['/bin/bash', '-lc', 'exec gh "$@"', '--', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        return subprocess.run(['/fixture/ssh-client', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
     def api(host, expected='host-user', **kw):
         r = gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
         ok = r.returncode == 0 and r.stdout.strip() == expected
         return ok
+    verify('SSH server predates wrapper installation', (ROOT / 'pre-install-gh').read_text().strip() == '/usr/local/bin/gh')
+    verify('standard wrapper installed', Path('/usr/local/bin/gh').read_text().startswith('#!/bin/sh\n# devsy gh relay\n'))
+    verify('real gh preserved in fixed backup', Path('/usr/local/bin/gh.devsy-original').read_bytes() == (ROOT / 'gh').read_bytes())
+    verify('no dedicated profile installed', not Path('/etc/profile.d/devsy-gh.sh').exists())
     host_before = (ROOT / 'host-gh' / 'hosts.yml').read_bytes()
     original = ROOT / 'guest-gh'
     original.mkdir(exist_ok=True)
@@ -120,13 +124,13 @@ def check():
     dispatcher = ROOT / 'dispatcher'
     dispatcher.mkdir()
     shim = dispatcher / 'gh'
-    shim.write_text('#!/bin/sh\nexport PATH=/usr/local/bin:/usr/bin:/bin\nif [ -n "$GH_TEST_CONFIG_OVERRIDE" ]; then export GH_CONFIG_DIR="$GH_TEST_CONFIG_OVERRIDE"; fi\nexec /usr/local/share/devsy/gh/bin/gh "$@"\n')
+    shim.write_text('#!/bin/sh\nexport PATH=/usr/bin:/usr/local/bin:/bin\nif [ -n "$GH_TEST_CONFIG_OVERRIDE" ]; then export GH_CONFIG_DIR="$GH_TEST_CONFIG_OVERRIDE"; fi\nexec /usr/local/bin/gh "$@"\n')
     shim.chmod(0o755)
     def nested_gh(*args, token=None, env=None):
         e = dict(os.environ, PATH=str(dispatcher) + ':/usr/local/bin:/usr/bin:/bin')
         if env:
             e.update(env)
-        return subprocess.run(['/usr/local/share/devsy/gh/bin/gh', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
+        return subprocess.run(['/usr/local/bin/gh', *args], input=token, text=True, capture_output=True, env=e, timeout=20)
     def nested_api(host, expected='host-user', **kw):
         r = nested_gh('api', 'user', '--hostname', host, '--jq', '.login', **kw)
         return r.returncode == 0 and r.stdout.strip() == expected
@@ -153,6 +157,12 @@ def check():
     (original / 'hosts.yml').write_text(registrations)
 
     verify('tokenless registrations use host active accounts', all(api(h) for h in HOSTS))
+    verify('non-PTY SSH uses fixed real-gh backup', last_diagnostic()['binary'] == '/usr/local/bin/gh.devsy-original')
+    selected = ROOT / 'selected-gh'
+    selected.mkdir()
+    (selected / 'gh').symlink_to('/usr/bin/gh')
+    r = subprocess.run(['/usr/local/bin/gh', 'api', 'user', '--hostname', HOSTS[0], '--jq', '.login'], env=dict(os.environ, PATH=str(selected) + ':/usr/local/bin:/usr/bin:/bin'), text=True, capture_output=True, timeout=20)
+    verify('repo-selected gh precedes fixed backup', r.returncode == 0 and r.stdout.strip() == 'host-user' and last_diagnostic()['binary'] == str(selected / 'gh'))
     verify('real auth status ignores hidden tokenless registrations', gh('auth', 'status').returncode == 0)
     verify('unchanged invocation preserves exact dotfiles registrations', saved() == registrations and no_forwarded_saved())
     decisions = last_diagnostic()['hosts']

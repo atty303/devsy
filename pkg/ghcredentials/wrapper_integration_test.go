@@ -27,7 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-//go:embed testdata/Dockerfile testdata/fixture.py
+//go:embed testdata/Dockerfile testdata/fixture.py testdata/ssh.go
 var fixtureFiles embed.FS
 
 func TestRealGitHubCLI(t *testing.T) {
@@ -116,7 +116,7 @@ func prepareFixture(t *testing.T, ctx context.Context, dir string) string {
 	t.Helper()
 	repo, err := filepath.Abs("../..")
 	require.NoError(t, err)
-	for _, name := range []string{"Dockerfile", "fixture.py"} {
+	for _, name := range []string{"Dockerfile", "fixture.py", "ssh.go"} {
 		b, err := fixtureFiles.ReadFile("testdata/" + name)
 		require.NoError(t, err)
 		root, err := os.OpenRoot(dir)
@@ -143,6 +143,11 @@ func prepareFixture(t *testing.T, ctx context.Context, dir string) string {
 	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, "build: %s", out)
+	sshBuild := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(dir, "ssh-client"), filepath.Join(dir, "ssh.go"))
+	sshBuild.Dir, sshBuild.Env = repo, build.Env
+	sshOut, err := sshBuild.CombinedOutput()
+	require.NoError(t, err, "build ssh fixture: %s", sshOut)
+
 	downloadGH(t, ctx, dir)
 	return name
 }
@@ -204,13 +209,16 @@ func startFixture(
 	t.Helper()
 	image := name + ":test"
 	command := `cp /fixture/gh /usr/bin/gh
+cp /fixture/gh /usr/local/bin/gh
 cp /fixture/devsy /usr/local/bin/devsy
 mkdir -p /root/.local/share/keyrings
-export PATH=/fixture:$PATH
+export PATH=/usr/local/bin:/usr/bin:/bin
 exec dbus-run-session -- sh -c '
  printf "%s" "$DBUS_SESSION_BUS_ADDRESS" > /fixture/bus
  printf fixture-password | gnome-keyring-daemon --unlock >/dev/null 2>/tmp/keyring.log
  python3 /fixture/fixture.py server >/dev/null 2>/tmp/api.log &
+ /usr/local/bin/devsy internal agent container ssh-server --address 127.0.0.1:12050 >/tmp/ssh.log 2>&1 &
+ /fixture/ssh-client --probe > /fixture/pre-install-gh
  /usr/local/bin/devsy internal agent container credentials-server --user root --configure-github-helper
  sleep 600
 '`
@@ -264,7 +272,7 @@ func waitFixture(t *testing.T, ctx context.Context, name string, done <-chan err
 			name,
 			"sh",
 			"-c",
-			"test -f /fixture/api-ready && test -f /usr/local/share/devsy/gh/bin/gh",
+			"test -f /fixture/api-ready && test -f /usr/local/bin/gh.devsy-original",
 		)
 		if c.Run() == nil {
 			ready = true

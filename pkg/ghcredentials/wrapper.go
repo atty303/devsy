@@ -131,6 +131,7 @@ func (inv *invocation) withSession(s *session) int {
 }
 
 func realBinary(wrapper string) (string, error) {
+	installed, _ := filepath.EvalSymlinks(wrapper)
 	self, _ := os.Stat(wrapper)
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		path := filepath.Join(dir, "gh")
@@ -139,6 +140,11 @@ func realBinary(wrapper string) (string, error) {
 			continue
 		}
 		if self != nil && os.SameFile(self, info) {
+			backup := installed + backupSuffix
+			original, err := executableInfo(backup)
+			if err == nil && !os.SameFile(self, original) {
+				return filepath.Abs(backup)
+			}
 			continue
 		}
 		return filepath.Abs(path)
