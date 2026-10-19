@@ -16,6 +16,11 @@
       "repository": "atty303/devsy",
       "branch": "atty303/apple",
       "checks": []
+    },
+    {
+      "repository": "atty303/devsy",
+      "branch": "atty303/container-info",
+      "checks": []
     }
   ],
   "patches": [
