@@ -434,7 +434,7 @@ func registerSubcommands(rootCmd *cobra.Command, globalFlags *flags.GlobalFlags)
 		update.NewUpdateCmd(),
 		wsCmdPkg.NewWorkspaceCmd(globalFlags),
 		cmdinternal.NewInternalCmd(globalFlags),
-		cmdinternal.NewPublicContainerCmd(globalFlags),
+		cmdinternal.NewContainerCmd(globalFlags),
 	)
 	if proEnabled() {
 		rootCmd.AddCommand(pro.NewProCmd(globalFlags))

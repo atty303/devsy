@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewPublicContainerCmd(globalFlags *flags.GlobalFlags) *cobra.Command {
+func NewContainerCmd(globalFlags *flags.GlobalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "container",
 		Short:             "Inspect the current container",
