@@ -165,7 +165,7 @@ func (cmd *CredentialsServerCmd) configureGitHubHelper(port int) {
 		return
 	}
 	if err := ghcredentials.Install(port); err != nil {
-		log.Debug("GitHub CLI wrapper installation unavailable")
+		log.Warnf("GitHub CLI wrapper installation unavailable: %v", err)
 	}
 }
 

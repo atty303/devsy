@@ -213,16 +213,7 @@ func prepareHostAuthentication(t ginkgo.GinkgoTInterface, dir string) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
 
-func startFixture(
-	t ginkgo.GinkgoTInterface,
-	ctx context.Context,
-	dir string,
-	fixture ghRelayFixture,
-) (context.CancelFunc, <-chan error) {
-	t.Helper()
-	name := fixture.name
-	image := name + ":test"
-	command := `cp /fixture/gh /usr/bin/gh
+const ghRelayStartCommand = `cp /fixture/gh /usr/bin/gh
 cp /fixture/gh /usr/local/bin/gh
 cp /fixture/devsy /usr/local/bin/devsy
 mkdir -p /root/.local/share/keyrings
@@ -233,15 +224,31 @@ exec dbus-run-session -- sh -c '
  python3 /fixture/fixture.py server >/dev/null 2>/tmp/api.log &
  /usr/local/bin/devsy internal agent container ssh-server --address 127.0.0.1:12050 >/tmp/ssh.log 2>&1 &
  python3 /fixture/fixture.py probe
- /usr/local/bin/devsy internal agent container credentials-server --user root --configure-github-helper
+ /usr/sbin/runuser -u vscode -- sh -c "
+  echo \$\$ > /home/vscode/gh-relay-server-pid
+  exec /usr/local/bin/devsy internal agent container credentials-server --user vscode --configure-github-helper
+ "
  sleep 600
 '`
+
+func startFixture(
+	t ginkgo.GinkgoTInterface,
+	ctx context.Context,
+	dir string,
+	fixture ghRelayFixture,
+) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	name := fixture.name
+	image := name + ":test"
+
 	//nolint:gosec // All mounts, commands, and image names belong to this disposable fixture.
 	guest := exec.CommandContext(
 		ctx,
 		"docker",
 		"run",
 		"--rm",
+		"--user",
+		"root",
 		"--platform",
 		"linux/"+fixture.arch,
 		"--name",
@@ -254,7 +261,7 @@ exec dbus-run-session -- sh -c '
 		image,
 		"sh",
 		"-c",
-		command,
+		ghRelayStartCommand,
 	)
 	reader, err := guest.StdoutPipe()
 	require.NoError(t, err)

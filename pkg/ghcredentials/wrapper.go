@@ -126,8 +126,8 @@ func (inv *invocation) withSession(s *session) int {
 }
 
 func realBinary(wrapper string) (string, error) {
-	installed, _ := filepath.EvalSymlinks(wrapper)
 	self, _ := os.Stat(wrapper)
+	backup := wrapperBackup(wrapper, self)
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		path := filepath.Join(dir, "gh")
 		info, err := executableInfo(path)
@@ -135,16 +135,33 @@ func realBinary(wrapper string) (string, error) {
 			continue
 		}
 		if self != nil && os.SameFile(self, info) {
-			backup := installed + backupSuffix
-			original, err := executableInfo(backup)
-			if err == nil && !os.SameFile(self, original) {
+			if backup != "" {
 				return filepath.Abs(backup)
 			}
 			continue
 		}
 		return filepath.Abs(path)
 	}
+	if backup != "" {
+		return filepath.Abs(backup)
+	}
 	return "", exec.ErrNotFound
+}
+
+func wrapperBackup(wrapper string, self os.FileInfo) string {
+	if self == nil {
+		return ""
+	}
+	installed, err := filepath.EvalSymlinks(wrapper)
+	if err != nil {
+		return ""
+	}
+	backup := installed + backupSuffix
+	original, err := executableInfo(backup)
+	if err != nil || os.SameFile(self, original) {
+		return ""
+	}
+	return backup
 }
 
 func replaceEnv(env []string, name, value string) []string {

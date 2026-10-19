@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
@@ -21,9 +23,17 @@ const (
 func Install(port int) error {
 	binary, err := os.Executable()
 	if err != nil {
-		return err
+		return boundary("install.binary", err)
 	}
-	return installWrapper(wrapperPath, binary, port)
+	if os.Geteuid() != 0 {
+		return boundary("install.sudo", installWithSudo(binary, port))
+	}
+	return boundary("install.wrapper", installWrapper(wrapperPath, binary, port))
+}
+
+func installWithSudo(binary string, port int) error {
+	//nolint:gosec
+	return exec.Command("sudo", binary, "internal", "install-gh-wrapper", strconv.Itoa(port)).Run()
 }
 
 func installWrapper(path, binary string, port int) error {
