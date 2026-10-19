@@ -149,3 +149,17 @@ func TestContainerInfoUnreadableGitMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerInfoOutsideCheckoutWithTrace(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, key := range []string{"GIT_TRACE", "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, "1")
+			info := &containerInfo{}
+			require.NoError(t, info.readCheckout(context.Background()))
+			require.Nil(t, info.CheckoutRoot)
+			require.Nil(t, info.Branch)
+			require.Nil(t, info.Commit)
+		})
+	}
+}

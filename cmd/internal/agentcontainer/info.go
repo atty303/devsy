@@ -126,8 +126,7 @@ func (info *containerInfo) readCheckout(ctx context.Context) error {
 	}
 	inside, err := infoGit(ctx, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
-		if exit, ok := errors.AsType[*exec.ExitError](err); ok && exit.ExitCode() == 128 &&
-			strings.HasPrefix(string(exit.Stderr), "fatal: not a git repository (or any ") {
+		if infoGitOutsideCheckout(err) {
 			return nil
 		}
 		return fmt.Errorf("resolve Git checkout root: %w", err)
@@ -141,6 +140,19 @@ func (info *containerInfo) readCheckout(ctx context.Context) error {
 	}
 	info.CheckoutRoot = &root
 	return info.readGitHead(ctx)
+}
+
+func infoGitOutsideCheckout(err error) bool {
+	exit, ok := errors.AsType[*exec.ExitError](err)
+	if !ok || exit.ExitCode() != 128 {
+		return false
+	}
+	for line := range strings.SplitSeq(string(exit.Stderr), "\n") {
+		if strings.HasPrefix(line, "fatal: not a git repository (or any ") {
+			return true
+		}
+	}
+	return false
 }
 
 func (info *containerInfo) readGitHead(ctx context.Context) error {
