@@ -89,13 +89,12 @@ func TestContainerInfoEntrypoints(t *testing.T) {
 			}, got)
 			text, err := executeContainerInfo(t, path, "plain")
 			require.NoError(t, err)
-			require.Equal(
-				t,
-				"SSH command: ssh configured-user@test-workspace.devsy\n"+
-					"SSH host: test-workspace.devsy\nRemote user: configured-user\n"+
-					"Checkout root: (none)\nBranch: (none)\nCommit: (none)\n",
-				text,
-			)
+			for _, value := range []string{
+				"Field", "Value", "SSH command", "SSH host", "Remote user", "Checkout root", "Branch", "Commit",
+				"ssh configured-user@test-workspace.devsy", "(none)",
+			} {
+				require.Contains(t, text, value)
+			}
 		})
 	}
 }

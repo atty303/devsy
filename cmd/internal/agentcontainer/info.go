@@ -17,6 +17,7 @@ import (
 	"github.com/devsy-org/devsy/pkg/config"
 	devconfig "github.com/devsy-org/devsy/pkg/devcontainer/config"
 	"github.com/devsy-org/devsy/pkg/output"
+	"github.com/devsy-org/devsy/pkg/table"
 	"github.com/spf13/cobra"
 )
 
@@ -100,16 +101,15 @@ func writeContainerInfo(w io.Writer, mode string, info *containerInfo) error {
 	if mode == output.ModeJSON {
 		return json.NewEncoder(w).Encode(info)
 	}
-	_, err := fmt.Fprintf(
-		w,
-		"SSH command: %s\nSSH host: %s\nRemote user: %s\nCheckout root: %s\nBranch: %s\nCommit: %s\n",
-		info.SSHCommand,
-		info.SSHHost,
-		info.RemoteUser,
-		infoValue(info.CheckoutRoot),
-		infoValue(info.Branch),
-		infoValue(info.Commit),
-	)
+	rows := [][]string{
+		{"SSH command", info.SSHCommand},
+		{"SSH host", info.SSHHost},
+		{"Remote user", info.RemoteUser},
+		{"Checkout root", infoValue(info.CheckoutRoot)},
+		{"Branch", infoValue(info.Branch)},
+		{"Commit", infoValue(info.Commit)},
+	}
+	_, err := fmt.Fprintln(w, table.Render([]string{"Field", "Value"}, rows))
 	return err
 }
 
