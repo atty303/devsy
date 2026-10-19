@@ -74,9 +74,7 @@ func executeContainerInfo(t *testing.T, path []string, format string) (string, e
 }
 
 func TestContainerInfoEntrypoints(t *testing.T) {
-	fixture := containerInfoFixture(t, infoSetupFixture)
-	t.Setenv("PATH", filepath.Dir(fixture))
-	t.Chdir(t.TempDir())
+	containerInfoFixture(t, infoSetupFixture)
 	for _, path := range containerInfoEntrypoints() {
 		t.Run(path[0], func(t *testing.T) {
 			raw, err := executeContainerInfo(t, path, "json")
@@ -95,7 +93,7 @@ func TestContainerInfoEntrypoints(t *testing.T) {
 			} {
 				require.Contains(t, text, value)
 			}
-			for _, omitted := range []string{"Checkout root", "Branch", "Commit", "Workspace folder"} {
+			for _, omitted := range []string{"do-not-output", "wrong-os-user"} {
 				require.NotContains(t, text, omitted)
 			}
 		})

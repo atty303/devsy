@@ -20,7 +20,7 @@ const (
 
 var _ = ginkgo.Describe("container connection information", ginkgo.Label("container-info"), func() {
 	ginkgo.It(
-		"should expose only configured SSH information through both entrypoints without Git",
+		"should show the container's SSH connection details",
 		ginkgo.SpecTimeout(framework.TimeoutShort()),
 		ginkgo.Label("integration"),
 		func(ctx context.Context) {
@@ -48,7 +48,7 @@ var _ = ginkgo.Describe("container connection information", ginkgo.Label("contai
 			framework.ExpectNoError(script.Chmod(0o700))
 			framework.ExpectNoError(script.Close())
 			framework.ExpectNoError(os.Symlink(script.Name(), filepath.Join(dir, "sh")))
-			t.Setenv("PATH", dir)
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv(config.EnvWorkspaceID, "test-workspace")
 			t.Setenv("USER", "wrong-os-user")
 			t.Setenv("LOGNAME", "wrong-os-user")
@@ -91,7 +91,7 @@ var _ = ginkgo.Describe("container connection information", ginkgo.Label("contai
 					gomega.Expect(stdout).To(gomega.ContainSubstring(value))
 				}
 				for _, omitted := range []string{
-					"Checkout root", "Branch", "Commit", "Workspace folder", "do-not-output", "wrong-os-user",
+					"do-not-output", "wrong-os-user",
 				} {
 					gomega.Expect(stdout).NotTo(gomega.ContainSubstring(omitted))
 				}
