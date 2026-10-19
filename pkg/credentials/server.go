@@ -23,6 +23,8 @@ import (
 
 const DefaultPort = "12049"
 
+const statusField = "status"
+
 type CredentialsClient interface {
 	GitCredentials(
 		ctx context.Context, in *tunnel.Message, opts ...grpc.CallOption,
@@ -66,8 +68,26 @@ func RunCredentialsServerWithListener(
 	client CredentialsClient,
 	owner string,
 ) error {
+	return runCredentialsServer(ctx, ln, client, Readiness{Owner: owner})
+}
+
+func RunPreparedCredentialsServer(
+	ctx context.Context,
+	ln net.Listener,
+	client CredentialsClient,
+	status Readiness,
+) error {
+	return runCredentialsServer(ctx, ln, client, status)
+}
+
+func runCredentialsServer(
+	ctx context.Context,
+	ln net.Listener,
+	client CredentialsClient,
+	status Readiness,
+) error {
 	srv := &http.Server{
-		Handler:           newCredentialsHandler(ctx, client, owner),
+		Handler:           newPreparedHandler(ctx, client, status.Owner, status),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -110,7 +130,29 @@ func newCredentialsHandler(
 	client CredentialsClient,
 	owner string,
 ) http.Handler {
+	return newPreparedHandler(ctx, client, owner, Readiness{})
+}
+
+func newPreparedHandler(
+	ctx context.Context,
+	client CredentialsClient,
+	owner string,
+	status Readiness,
+) http.Handler {
 	routes := map[string]credentialsHandlerFunc{
+		"/ready": func(_ context.Context, w http.ResponseWriter, r *http.Request, client CredentialsClient) error {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return nil
+			}
+			if err := probeTransport(r.Context(), client); err != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return nil
+			}
+			return json.NewEncoder(w).Encode(status)
+		},
 		"/": func(_ context.Context, writer http.ResponseWriter, _ *http.Request, _ CredentialsClient) error {
 			writer.WriteHeader(http.StatusOK)
 			return nil
@@ -122,7 +164,7 @@ func newCredentialsHandler(
 			return err
 		},
 		"/git-credentials":            handleGitCredentialsRequest,
-		"/github-credentials":         handleGitHubCredentialsRequest,
+		"/github-credentials":         pinnedGitHubHandler(status),
 		"/docker-credentials":         handleDockerCredentialsRequest,
 		"/git-ssh-signature":          handleGitSSHSignatureRequest,
 		"/devsy-platform-credentials": handleDevsyPlatformCredentialsRequest,
@@ -146,12 +188,44 @@ func newCredentialsHandler(
 	})
 }
 
+func pinnedGitHubHandler(status Readiness) credentialsHandlerFunc {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, client CredentialsClient) error {
+		if r.Method == http.MethodPost && status.validIdentity() &&
+			(r.Header.Get(HeaderCredentialsInstance) != status.Instance ||
+				r.Header.Get(HeaderCredentialsHostOwner) != status.HostOwner) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusConflict)
+			return json.NewEncoder(w).Encode(map[string]string{statusField: "relay_changed"})
+		}
+		return handleGitHubCredentialsRequest(ctx, w, r, client)
+	}
+}
+
+func probeTransport(ctx context.Context, client CredentialsClient) error {
+	if client == nil {
+		return nil
+	}
+	ping, ok := client.(interface {
+		Ping(context.Context, *tunnel.Empty, ...grpc.CallOption) (*tunnel.Empty, error)
+	})
+	if !ok {
+		return fmt.Errorf("credentials readiness transport unavailable")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	_, err := ping.Ping(ctx, &tunnel.Empty{})
+	return err
+}
+
 func handleGitHubCredentialsRequest(
-	ctx context.Context,
+	_ context.Context,
 	writer http.ResponseWriter,
 	request *http.Request,
 	client CredentialsClient,
 ) error {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("Cache-Control", "no-store")
 	if request.Method != http.MethodPost {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 		return nil
@@ -160,12 +234,16 @@ func handleGitHubCredentialsRequest(
 		GitHubCredentials(context.Context, *tunnel.Empty, ...grpc.CallOption) (*tunnel.Message, error)
 	})
 	if !ok {
-		return json.NewEncoder(writer).Encode(map[string]string{"status": "rpc_unavailable"})
+		return json.NewEncoder(writer).Encode(map[string]string{statusField: "rpc_unavailable"})
 	}
-	response, err := githubClient.GitHubCredentials(request.Context(), &tunnel.Empty{})
+	ctx, cancel := context.WithTimeout(request.Context(), 4*time.Second)
+	defer cancel()
+	response, err := githubClient.GitHubCredentials(ctx, &tunnel.Empty{})
 	if err != nil {
 		kind := "rpc_error"
 		switch grpcstatus.Code(err) {
+		case codes.Unimplemented:
+			kind = "rpc_unavailable"
 		case codes.PermissionDenied:
 			kind = "rpc_denied"
 		case codes.DeadlineExceeded:
@@ -173,7 +251,7 @@ func handleGitHubCredentialsRequest(
 		case codes.Canceled:
 			kind = "rpc_cancelled"
 		}
-		return json.NewEncoder(writer).Encode(map[string]string{"status": kind})
+		return json.NewEncoder(writer).Encode(map[string]string{statusField: kind})
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Header().Set("Cache-Control", "no-store")

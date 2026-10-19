@@ -32,7 +32,6 @@ jobs:
               - 'e2e/**'
               - 'hack/microsandbox/**'
               - 'hack/provider_update_ci/**'
-              - 'hack/run-managed-policy-e2e.sh'
               - '.github/workflows/pr-ci.yml'
               - '.github/workflows/docker-buildkit-windows.yml'
               - 'hack/licenses/**'
@@ -45,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
 
       - run: prek run --all-files
 
@@ -140,6 +139,41 @@ jobs:
       - name: test Linux registry fixture
         if: runner.os == 'Linux'
         run: go test -race -count=1 -timeout 90s ./e2e/framework/registryfixture
+
+      - name: test Linux GitHub API oracle
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 -timeout 90s ./e2e/framework/ghfixture
+
+  github-credential-host-tests:
+    name: GitHub Credential Host Tests (${{ matrix.runner }})
+    needs: [changes]
+    if: needs.changes.outputs.go == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - name: record native host and available CLI versions
+        run: |
+          go env GOOS GOARCH
+          gh --version
+      - name: execute native credential discovery and process-bound regressions
+        env:
+          DEVSY_TEST_REAL_GH: "1"
+          DEVSY_TEST_NATIVE_KEYRING: ${{ runner.os == 'macOS' && '1' || '0' }}
+        run: >-
+          go test -race -count=1 -v -timeout 5m ./pkg/ghcredentials
+          -run '^(TestNative.*|TestHostLookupEnvironmentAndGuestEnvironmentAreIndependent|TestRegisteredGuestDeclinesAmbiguousKeyringResult)$'
+      - name: test strict fixture report validation
+        run: go test -race -count=1 -v ./e2e/framework/ghfixture
 
   windows-transport-tests:
     name: Windows Transport Tests
@@ -302,6 +336,23 @@ jobs:
         with:
           name: devsy-ci-microsandbox-linux
           path: ${{ runner.temp }}/devsy-ci-microsandbox
+
+      - name: build Linux GitHub credential fixtures
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          CGO_ENABLED: 0
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" go build -trimpath -o "${RUNNER_TEMP}/ghfixture-linux-${arch}" ./e2e/cmd/ghfixture
+          done
+
+      - name: upload Linux GitHub credential fixtures
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ghfixture-linux
+          path: ${{ runner.temp }}/ghfixture-linux-*
 
       - name: build e2e test binary
         if: matrix.runner == 'ubuntu-latest' || matrix.runner == 'windows-latest'
@@ -954,7 +1005,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job-timeout-minutes || 45 }}
     steps:
-      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+      - uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         background: true
         if: matrix.free-disk-space == true && runner.os == 'Linux' && (matrix.requires-secret == false || needs.can-read-secret.outputs.secret-set == 'true')
         with:
@@ -1017,6 +1068,13 @@ jobs:
           name: e2e-test-${{ steps.os.outputs.runner_os }}
           path: ./e2e/
 
+      - name: download GitHub credential fixture
+        if: matrix.label == 'ssh' && runner.os == 'Linux'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ghfixture-linux
+          path: ./e2e/bin/
+
       - name: setup executable
         if: matrix.requires-secret == false || needs.can-read-secret.outputs.secret-set == 'true'
         shell: bash
@@ -1057,33 +1115,10 @@ jobs:
         shell: pwsh
         timeout-minutes: 5
         run: |
-          $msiPath = "$env:RUNNER_TEMP\podman.msi"
-          if ("${{ steps.podman-cache-windows.outputs.cache-hit }}" -ne "true") {
-            $msiUrl = "https://github.com/containers/podman/releases/download/v5.8.2/podman-installer-windows-amd64.msi"
-            Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath
-          }
-
-          $expectedHash = "eda54f26f9695d198d9a679fa45ae24ba35b78444f432b5fe0c122c5a3624c57"
-          $actualHash = (Get-FileHash -Path $msiPath -Algorithm SHA256).Hash.ToLower()
-          if ($actualHash -ne $expectedHash) {
-            throw "SHA256 mismatch for podman MSI! Expected: $expectedHash, Got: $actualHash"
-          }
-          Write-Host "Podman MSI checksum verified: $actualHash"
-
-          $installDir = "C:\Program Files\RedHat\Podman"
-          $logFile = "$env:RUNNER_TEMP\podman-install.log"
-          $proc = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$msiPath`" /qn /norestart /l*v `"$logFile`" INSTALLDIR=`"$installDir`""
-          Write-Host "MSI exit code: $($proc.ExitCode)"
-
-          if (!(Test-Path "$installDir\podman.exe")) {
-            Write-Host "--- MSI install log (last 50 lines) ---"
-            Get-Content $logFile -Tail 50
-            Write-Host "--- Searching for podman.exe ---"
-            Get-ChildItem "C:\" -Filter "podman.exe" -Recurse -Depth 4 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-            throw "podman.exe not found at $installDir"
-          }
-
-          echo "$installDir" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+          & "$env:RUNNER_TEMP\devsy-ci-podman\devsy-ci-podman.exe" install `
+            --url "https://github.com/containers/podman/releases/download/v5.8.2/podman-installer-windows-amd64.msi" `
+            --sha256 "eda54f26f9695d198d9a679fa45ae24ba35b78444f432b5fe0c122c5a3624c57" --msi-path "$env:RUNNER_TEMP\podman.msi" `
+            --install-dir "C:\Program Files\RedHat\Podman" --log-path "$env:RUNNER_TEMP\podman-install.log"
 
       - name: start podman (Windows)
         if: (matrix.install-kind == true || matrix.install-podman == true) && runner.os == 'Windows' && (matrix.requires-secret == false || needs.can-read-secret.outputs.secret-set == 'true')
@@ -1317,6 +1352,7 @@ jobs:
       - lint
       - agent-skill
       - unit-tests
+      - github-credential-host-tests
       - windows-transport-tests
       - provider-update-windows
       - licenses
@@ -1357,6 +1393,7 @@ jobs:
           check_result "lint" "${{ needs.lint.result }}" false || status=1
           check_result "agent-skill" "${{ needs.agent-skill.result }}" false || status=1
           check_result "unit-tests" "${{ needs.unit-tests.result }}" true || status=1
+          check_result "github-credential-host-tests" "${{ needs.github-credential-host-tests.result }}" true || status=1
           check_result "windows-transport-tests" "${{ needs.windows-transport-tests.result }}" true || status=1
           check_result "provider-update-windows" "${{ needs.provider-update-windows.result }}" true || status=1
           check_result "licenses" "${{ needs.licenses.result }}" true || status=1

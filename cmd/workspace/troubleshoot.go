@@ -128,7 +128,7 @@ func (cmd *TroubleshootCmd) collectWorkspaceInfo(
 		info.addErr("workspace status", err)
 	}
 
-	if info.Workspace.Pro != nil {
+	if info.Workspace.Platform != nil {
 		info.WorkspaceTroubleshoot, err = collectWorkspaceProTroubleshoot(
 			ctx, info.Config, info.Workspace, info.DevsyProInstances,
 		)
@@ -165,7 +165,7 @@ func collectWorkspaceProTroubleshoot(
 		return nil, nil
 	}
 
-	return collectProWorkspaceInfo(ctx, devsyConfig, proInstance.Host, ws.UID, ws.Pro.Project)
+	return collectProWorkspaceInfo(ctx, devsyConfig, proInstance.Host, ws.UID, ws.Platform.Project)
 }
 
 // collectDaemonStatus returns the local daemon status when the client is a
@@ -213,8 +213,7 @@ func collectProWorkspaceInfo(
 		return nil, fmt.Errorf("management: %w", err)
 	}
 
-	troubleshoot, err := managementClient.
-		Loft().
+	troubleshoot, err := managementClient.Devsy().
 		ManagementV1().
 		DevsyWorkspaceInstances(workspace.Namespace).
 		Troubleshoot(ctx, workspace.Name, metav1.GetOptions{})
@@ -273,7 +272,7 @@ type DevsyProInstance struct {
 func collectPlatformInfo(
 	devsyConfig *config.Config,
 ) ([]DevsyProInstance, error) {
-	proInstanceList, err := workspace.ListProInstances(devsyConfig)
+	proInstanceList, err := workspace.ListPlatformInstances(devsyConfig)
 	if err != nil {
 		return nil, fmt.Errorf("list pro instances: %w", err)
 	}

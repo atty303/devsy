@@ -53,6 +53,7 @@ type RunServicesOptions struct {
 	ConfigureGitHubCredentials     bool
 	ConfigureGitSSHSignatureHelper bool
 	GitSSHSigningKey               string
+	HostOwner                      string
 	// ExtraListeners holds pre-bound listeners keyed by "host:port" so the
 	// helper can skip net.Listen and avoid a probe-to-listen TOCTOU race.
 	ExtraListeners map[string]net.Listener
@@ -159,6 +160,7 @@ func buildCredentialsCommand(ctx context.Context, opts RunServicesOptions) strin
 		command += " --configure-git-helper"
 	}
 	if opts.ConfigureGitHubCredentials {
+		command += " --host-owner " + shellescape.Quote(opts.HostOwner)
 		command += " --configure-github-helper"
 	}
 	if opts.ConfigureGitSSHSignatureHelper {
@@ -244,6 +246,9 @@ func runServicesIteration(
 // to run the credentials server remotely and the services server locally to
 // communicate with the container.
 func RunServices(ctx context.Context, opts RunServicesOptions) error {
+	if opts.HostOwner == "" {
+		opts.HostOwner = hostCredentialOwner()
+	}
 	exitAfterTimeout := getExitAfterTimeout(opts.DevsyConfig, opts.DisableIdleTimeout)
 
 	fp := portForwardParams{
@@ -269,8 +274,25 @@ func RunServices(ctx context.Context, opts RunServicesOptions) error {
 	}, func(err error) bool {
 		return ctx.Err() == nil
 	}, func() error {
-		return runServicesIteration(ctx, opts, forwardedPorts, resolver)
+		return runOptionalGitHubServices(ctx, opts, func(current RunServicesOptions) error {
+			return runServicesIteration(ctx, current, forwardedPorts, resolver)
+		})
 	})
+}
+
+func runOptionalGitHubServices(
+	ctx context.Context,
+	opts RunServicesOptions,
+	run func(RunServicesOptions) error,
+) error {
+	err := run(opts)
+	if err == nil || !opts.ConfigureGitHubCredentials || ctx.Err() != nil {
+		return err
+	}
+	log.Debug("GitHub credential service unavailable; retrying other credential services")
+	opts.ConfigureGitHubCredentials = false
+	opts.HostOwner = ""
+	return run(opts)
 }
 
 // buildPortAttributeResolver loads port attributes from the container result.

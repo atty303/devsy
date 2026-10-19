@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -31,12 +30,9 @@ var _ = ginkgo.Describe(
 			"should launch a workspace through an executable path containing spaces",
 			ginkgo.SpecTimeout(framework.TimeoutLong()),
 			func(ctx context.Context) {
-				if runtime.GOOS != osWindows {
-					ginkgo.Skip("skipping on non-Windows")
-				}
+				framework.SkipUnlessOS("windows", "skipping on non-Windows")
 
-				tempDir, err := framework.CopyToTempDir("tests/ssh/testdata/local-test")
-				framework.ExpectNoError(err)
+				tempDir := framework.CopyTestdata("tests/ssh/testdata/local-test", initialDir)
 
 				baseFramework := framework.NewDefaultFramework(initialDir + "/bin")
 				sourcePath := filepath.Join(baseFramework.DevsyBinDir, baseFramework.DevsyBinName)
@@ -55,7 +51,6 @@ var _ = ginkgo.Describe(
 				sshConfigPath := filepath.Join(ginkgo.GinkgoT().TempDir(), "ssh config")
 				ginkgo.DeferCleanup(func(cleanupCtx context.Context) {
 					_ = f.DevsyWorkspaceDelete(cleanupCtx, tempDir)
-					framework.CleanupTempDir(initialDir, tempDir)
 				})
 
 				upCtx, cancelUp := context.WithTimeout(ctx, 5*time.Minute)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,10 +21,16 @@ import (
 )
 
 type session struct {
-	Original string    `json:"original"`
-	Accounts []Account `json:"accounts"`
-	dir      string
-	lock     *ownerLock
+	Version      int              `json:"version"`
+	Original     string           `json:"original"`
+	Overlays     []overlayAccount `json:"overlays,omitempty"`
+	Sanitized    bool             `json:"sanitized"`
+	LostHosts    bool             `json:"lost_hosts,omitempty"`
+	Publications []publication    `json:"publications,omitempty"`
+	Accounts     []Account        `json:"-"`
+	dir          string
+	lock         *ownerLock
+	checkpoint   func(string) error
 }
 
 func sessionRoot() (string, error) {
@@ -74,7 +81,7 @@ func newSession(ctx context.Context, root, original string, accounts []Account) 
 		_ = os.RemoveAll(dir)
 		return nil, boundary("session.owner_lock", err)
 	}
-	s := &session{Original: original, Accounts: accounts, dir: dir, lock: owner}
+	s := &session{Version: 2, Original: original, Accounts: accounts, dir: dir, lock: owner}
 	ready := false
 	defer func() {
 		if !ready {
@@ -99,8 +106,18 @@ func newSession(ctx context.Context, root, original string, accounts []Account) 
 
 func (s *session) work() string { return filepath.Join(s.dir, "work") }
 
+type treeSnapshot struct {
+	ctx     context.Context
+	bytes   int64
+	entries int
+}
+
 func copyTree(ctx context.Context, src, dst string, depth int) error {
-	if err := ctx.Err(); err != nil {
+	return (&treeSnapshot{ctx: ctx, bytes: 64 << 20, entries: 4096}).copyTree(src, dst, depth)
+}
+
+func (s *treeSnapshot) copyTree(src, dst string, depth int) error {
+	if err := s.ctx.Err(); err != nil {
 		return err
 	}
 	if depth > 32 {
@@ -117,8 +134,7 @@ func copyTree(ctx context.Context, src, dst string, depth int) error {
 		return err
 	}
 	for _, e := range entries {
-		if err := copyEntry(
-			ctx,
+		if err := s.copyEntry(
 			filepath.Join(src, e.Name()),
 			filepath.Join(dst, e.Name()),
 			depth,
@@ -129,19 +145,23 @@ func copyTree(ctx context.Context, src, dst string, depth int) error {
 	return nil
 }
 
-func copyEntry(ctx context.Context, src, dst string, depth int) error {
+func (s *treeSnapshot) copyEntry(src, dst string, depth int) error {
+	s.entries--
+	if s.entries < 0 {
+		return errors.New("GitHub CLI configuration has too many entries")
+	}
 	info, err := os.Stat(src) // Follow symlinks into a private copy, never a link to the original.
 	if err != nil {
 		return err
 	}
 	if info.IsDir() {
-		return copyTree(ctx, src, dst, depth+1)
+		return s.copyTree(src, dst, depth+1)
 	}
 	if !info.Mode().IsRegular() {
 		return nil
 	}
-	if info.Size() > 16<<20 {
-		return errors.New("GitHub CLI configuration file too large")
+	if err := s.reserveBytes(info.Size()); err != nil {
+		return err
 	}
 	data, err := readFile(src)
 	if err != nil {
@@ -152,6 +172,18 @@ func copyEntry(ctx context.Context, src, dst string, depth int) error {
 		mode = 0o700
 	}
 	return os.WriteFile(dst, data, mode)
+}
+
+func (s *treeSnapshot) reserveBytes(size int64) error {
+	if size > 16<<20 {
+		return errors.New("GitHub CLI configuration file too large")
+	}
+	s.bytes -= size
+	if s.bytes < 0 {
+		return errors.New("GitHub CLI configuration snapshot too large")
+	}
+
+	return nil
 }
 
 func recoverSessions(ctx context.Context, root string) {
@@ -171,6 +203,9 @@ func recoverSessions(ctx context.Context, root string) {
 }
 
 func recoverSession(ctx context.Context, dir string) error {
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	owner, ok, err := tryOwner(filepath.Join(dir, "owner.lock"))
 	if err != nil {
 		return boundary("recovery.owner_lock", err)
@@ -181,18 +216,30 @@ func recoverSession(ctx context.Context, dir string) error {
 	defer func() { _ = owner.Close() }()
 	old, err := loadSession(dir)
 	if err != nil {
-		return boundary("recovery.metadata", err)
+		return errors.Join(
+			boundary("recovery.lost_intent", err),
+			boundary("recovery.cleanup", os.RemoveAll(dir)),
+		)
 	}
-	if old != nil {
-		if err := old.sync(ctx); err != nil {
-			return err
-		}
+	if err := recoverLoadedSession(ctx, old); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return boundary("recovery.cleanup", err)
 	}
 	log.Debug("gh relay: configuration recovered")
 	return nil
+}
+
+func recoverLoadedSession(ctx context.Context, old *session) error {
+	if old == nil {
+		return nil
+	}
+	err := old.sync(ctx)
+	if old.completed() && onlyAuthConflict(err) {
+		return errors.Join(err, boundary("recovery.cleanup", os.RemoveAll(old.dir)))
+	}
+	return err
 }
 
 func loadSession(dir string) (*session, error) {
@@ -204,11 +251,52 @@ func loadSession(dir string) (*session, error) {
 		return nil, nil
 	}
 	var old session
-	if json.Unmarshal(b, &old) != nil || !filepath.IsAbs(old.Original) {
+	if json.Unmarshal(b, &old) != nil {
 		return nil, errInvalidConfig
+	}
+	if err := old.upgrade(b); err != nil {
+		return nil, err
+	}
+	if err := old.validate(); err != nil {
+		return nil, err
 	}
 	old.dir = dir
 	return &old, nil
+}
+
+func (s *session) upgrade(b []byte) error {
+	if s.Version == 0 {
+		var legacy struct {
+			Accounts []Account `json:"accounts"`
+		}
+		if json.Unmarshal(b, &legacy) != nil {
+			return errInvalidConfig
+		}
+		for _, a := range legacy.Accounts {
+			s.Overlays = append(s.Overlays, fingerprint(a))
+		}
+		s.Version = 2
+	}
+	return nil
+}
+
+func (s *session) validate() error {
+	if !filepath.IsAbs(s.Original) || s.Version != 2 {
+		return errInvalidConfig
+	}
+	seen := map[string]bool{}
+	for _, p := range s.Publications {
+		if !validPublication(&p) || seen[p.Name] {
+			return errInvalidConfig
+		}
+		seen[p.Name] = true
+	}
+	for _, a := range s.Overlays {
+		if !a.valid() {
+			return errInvalidConfig
+		}
+	}
+	return nil
 }
 
 func (s *session) save() error {
@@ -216,7 +304,7 @@ func (s *session) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, "session.json"), b, 0o600)
+	return writeOriginal(filepath.Join(s.dir, "session.json"), b, 0o600)
 }
 
 func localAuthSource(n *yaml.Node) string {
@@ -294,6 +382,10 @@ func (s *session) overlay(
 		}
 	}
 	s.Accounts = injected
+	s.Overlays = nil
+	for _, a := range injected {
+		s.Overlays = append(s.Overlays, fingerprint(a))
+	}
 	return nil
 }
 
@@ -333,8 +425,14 @@ func (s *session) strip(before, data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, a := range s.Accounts {
-		stripAccount(hosts, get(original, a.Host), a)
+	accounts := s.Overlays
+	if len(accounts) == 0 {
+		for _, a := range s.Accounts {
+			accounts = append(accounts, fingerprint(a))
+		}
+	}
+	for _, a := range accounts {
+		stripOverlay(hosts, get(original, a.Host), a)
 	}
 	return yaml.Marshal(hosts)
 }
@@ -358,6 +456,9 @@ func files(dir string) (map[string]bool, error) {
 }
 
 func (s *session) sync(ctx context.Context) error {
+	if err := s.sanitize(); err != nil {
+		return err
+	}
 	root := filepath.Dir(s.dir)
 	key := sha256.Sum256([]byte(s.Original))
 	l, err := lock(ctx, filepath.Join(root, fmt.Sprintf("config-%x.lock", key[:16])))
@@ -365,24 +466,39 @@ func (s *session) sync(ctx context.Context) error {
 		return boundary("config.lock", err)
 	}
 	defer func() { _ = l.Close() }()
-	beforeDir := filepath.Join(s.dir, "before")
-	names, err := files(beforeDir)
+	ordered, err := s.changedNames()
 	if err != nil {
 		return err
 	}
+	var syncErr error
+	for _, name := range ordered {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(syncErr, err)
+		}
+		syncErr = errors.Join(syncErr, s.syncFile(name))
+	}
+	return syncErr
+}
+
+func (s *session) changedNames() ([]string, error) {
+	beforeDir := filepath.Join(s.dir, "before")
+	names, err := files(beforeDir)
+	if err != nil {
+		return nil, err
+	}
 	afterNames, err := files(s.work())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for name := range afterNames {
 		names[name] = true
 	}
+	ordered := make([]string, 0, len(names))
 	for name := range names {
-		if err := s.syncFile(name); err != nil {
-			return err
-		}
+		ordered = append(ordered, name)
 	}
-	return nil
+	slices.Sort(ordered)
+	return ordered, nil
 }
 
 func writeOriginal(path string, data []byte, mode fs.FileMode) error {
@@ -416,8 +532,8 @@ func writeOriginal(path string, data []byte, mode fs.FileMode) error {
 
 func (s *session) finish(ctx context.Context) error {
 	err := s.sync(ctx)
-	if err == nil {
-		_ = os.RemoveAll(s.dir)
+	if err == nil || (onlyAuthConflict(err) && s.completed()) {
+		err = errors.Join(err, boundary("session.cleanup", os.RemoveAll(s.dir)))
 	}
 	_ = s.lock.Close()
 	return err
@@ -452,8 +568,19 @@ func (a Account) inject(
 	if token != "" {
 		return localTokenSource(token, env)
 	}
+	if registeredAccount(h) {
+		return "local_identity_unavailable"
+	}
 	a.overlay(hosts)
 	return "forwarded"
+}
+
+func registeredAccount(h *yaml.Node) bool {
+	if user := get(h, "user"); user != nil && user.Value != "" {
+		return true
+	}
+	users := get(h, "users")
+	return users != nil && len(users.Content) != 0
 }
 
 // gh auth token reports an absent token as exit 1. It also collapses keyring
@@ -480,7 +607,7 @@ func (a Account) overlay(hosts *yaml.Node) {
 	put(h, "users", users)
 }
 
-func stripAccount(hosts, original *yaml.Node, a Account) {
+func stripOverlay(hosts, original *yaml.Node, a overlayAccount) {
 	h := get(hosts, a.Host)
 	if h == nil {
 		put(hosts, a.Host, original)
@@ -493,8 +620,8 @@ func stripAccount(hosts, original *yaml.Node, a Account) {
 	// Successful keyring login removes both file tokens. Keep its account
 	// registration; the keyring itself remains entirely under gh's control.
 	keyringLogin := activeToken == nil && userToken == nil
-	removeForwardedToken(h, original, a.Token)
-	removeForwardedToken(account, get(get(original, "users"), a.User), a.Token)
+	removeOverlayToken(h, original, a)
+	removeOverlayToken(account, get(get(original, "users"), a.User), a)
 	if !keyringLogin {
 		stripRegistration(h, get(original, "user"), a.User)
 	}
@@ -510,8 +637,8 @@ func stripAccount(hosts, original *yaml.Node, a Account) {
 	}
 }
 
-func removeForwardedToken(n, original *yaml.Node, token string) {
-	if t := get(n, "oauth_token"); t != nil && t.Value == token {
+func removeOverlayToken(n, original *yaml.Node, a overlayAccount) {
+	if t := get(n, "oauth_token"); t != nil && a.matches(t.Value) {
 		put(n, "oauth_token", get(original, "oauth_token"))
 	}
 }
@@ -549,16 +676,16 @@ func (s *session) changedFile(name string) ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, boundary("config.changed_read", err)
 	}
-	if name == hostsFile && len(after) != 0 {
-		after, err = s.strip(before, after)
-		if err != nil {
-			return nil, nil, boundary("config.strip", err)
-		}
-	}
 	return before, after, nil
 }
 
 func (s *session) syncFile(name string) error {
+	if s.skipFile(name) {
+		return nil
+	}
+	if p := s.publication(name); p != nil {
+		return s.publish(p)
+	}
 	before, after, err := s.changedFile(name)
 	if err != nil {
 		return err
@@ -573,38 +700,20 @@ func (s *session) syncFile(name string) error {
 		return boundary("config.latest_read", err)
 	}
 	after, err = s.mergeFile(name, before, after, latest)
-	if err != nil {
+	if err != nil && !errors.Is(err, errAuthConflict) {
 		return boundary("config.merge", err)
 	}
-	if bytes.Equal(latest, after) {
-		return nil
-	}
-	err = s.saveOriginal(name, after)
-	return boundary("config.write", err)
+	return s.planPublication(name, latest, after, errors.Is(err, errAuthConflict))
 }
 
 func (s *session) mergeFile(name string, before, after, latest []byte) ([]byte, error) {
-	if name == hostsFile || name == configFile {
+	if name == hostsFile {
+		return mergeHosts(before, after, latest)
+	}
+	if name == configFile {
 		return mergeYAML(before, after, latest)
 	}
 	return after, nil
-}
-
-func (s *session) saveOriginal(name string, after []byte) error {
-	path := filepath.Join(s.Original, name)
-	if after == nil {
-		err := os.Remove(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	mode := fs.FileMode(0o600)
-	info, err := os.Stat(filepath.Join(s.work(), name))
-	if err == nil && info.Mode()&0o111 != 0 {
-		mode = 0o700
-	}
-	return writeOriginal(path, after, mode)
 }
 
 func localTokenSource(token string, env []string) string {
@@ -625,16 +734,34 @@ var authEnvironment = map[string]bool{
 }
 
 func resolveOriginal(path string) (string, error) {
-	// Resolve the current link target at writeback time, including symlinked
-	// parent directories. Never replace a dotfiles manager's symlink.
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	} else if !errors.Is(err, os.ErrNotExist) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
 		return "", err
-	} else if _, linkErr := os.Lstat(path); linkErr == nil {
-		// A dangling link is still the user's link. Keep the changes pending
-		// rather than replacing it with a regular file.
+	}
+	if _, linkErr := os.Lstat(path); linkErr == nil {
 		return "", errors.New("GitHub CLI configuration target unavailable")
 	}
-	return path, nil
+	parent := filepath.Dir(path)
+	if parent == path {
+		return path, nil
+	}
+	resolved, err = resolveOriginal(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, filepath.Base(path)), nil
+}
+
+func (s *session) skipFile(name string) bool { return name == hostsFile && s.LostHosts }
+
+func (s *session) publication(name string) *publication {
+	for i := range s.Publications {
+		if s.Publications[i].Name == name {
+			return &s.Publications[i]
+		}
+	}
+	return nil
 }

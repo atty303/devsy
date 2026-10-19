@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devsy-org/devsy/pkg/credentials"
 	"github.com/devsy-org/devsy/pkg/log"
 )
 
@@ -36,16 +36,18 @@ func Run(args []string) int {
 	if _, explicit := os.LookupEnv("GH_PATH"); !explicit {
 		env = replaceEnv(env, "GH_PATH", wrapperPath)
 	}
-	active := os.Getenv(sessionEnv)
 	// A local lookup may re-enter through another dispatcher. Keep forwarding
 	// disabled throughout that process tree, even if it changes GH_CONFIG_DIR.
-	if os.Getenv(authProbeEnv) == "1" || (active != "" && active == os.Getenv("GH_CONFIG_DIR")) {
+	if localOnlySession() {
 		return runGH(binary, args[1:], env, nil)
 	}
 	inv := &invocation{binary: binary, args: args[1:], env: env}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	inv.recover(ctx)
+	if forwardingDisabled() {
+		return runGH(binary, inv.args, env, nil)
+	}
 	session := inv.prepare(ctx)
 	if session == nil {
 		return runGH(binary, inv.args, env, nil)
@@ -81,7 +83,7 @@ func (inv *invocation) prepare(ctx context.Context) *session {
 	}
 	log.Debugw("gh relay: host authentication", "status", result.Status)
 	switch result.Status {
-	case "available", "gh_not_found", hostNoActiveAccounts, "rpc_denied":
+	case stateAvailable, "gh_not_found", hostNoActiveAccounts, "rpc_denied":
 	default:
 		log.Warnw(
 			"gh relay: forwarding unavailable",
@@ -149,16 +151,19 @@ func realBinary(wrapper string) (string, error) {
 }
 
 func wrapperBackup(wrapper string, self os.FileInfo) string {
-	if self == nil {
-		return ""
-	}
 	installed, err := filepath.EvalSymlinks(wrapper)
 	if err != nil {
-		return ""
+		if !os.IsNotExist(err) {
+			return ""
+		}
+		installed = wrapper
 	}
 	backup := installed + backupSuffix
 	original, err := executableInfo(backup)
-	if err != nil || os.SameFile(self, original) {
+	if err != nil || (self != nil && os.SameFile(self, original)) {
+		return ""
+	}
+	if own, err := isWrapper(backup); err != nil || own {
 		return ""
 	}
 	return backup
@@ -175,37 +180,37 @@ func replaceEnv(env []string, name, value string) []string {
 }
 
 func fetch(ctx context.Context) (HostResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	number, err := relayPort()
 	if err != nil {
 		return HostResult{}, err
 	}
-	// A loopback-only transport must not send tokens or relay requests through
-	// a user-configured HTTP proxy, redirect, or an external endpoint.
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: nil,
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				dialer := net.Dialer{}
-				return dialer.DialContext(
-					ctx,
-					"tcp",
-					net.JoinHostPort("127.0.0.1", strconv.Itoa(number)),
-				)
-			},
+	ready, err := credentials.ProbeReadiness(
+		ctx,
+		number,
+		credentials.Readiness{
+			HostOwner:     os.Getenv("DEVSY_GH_HOST_OWNER"),
+			Instance:      os.Getenv("DEVSY_GH_INSTANCE"),
+			GitHubAllowed: true,
 		},
-		Timeout:       5 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	)
+	if err != nil {
+		return HostResult{}, boundary("relay.readiness", err)
 	}
+	client := credentials.LoopbackHTTPClient()
 	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"http://localhost/github-credentials",
+		"http://"+ready.Address+"/github-credentials",
 		nil,
 	)
 	if err != nil {
 		return HostResult{}, boundary("relay.http", err)
 	}
+	req.Header.Set(credentials.HeaderCredentialsInstance, ready.Instance)
+	req.Header.Set(credentials.HeaderCredentialsHostOwner, ready.HostOwner)
 	resp, err := client.Do(req)
 	if err != nil {
 		return HostResult{}, boundary("relay.http", err)
@@ -217,8 +222,19 @@ func fetch(ctx context.Context) (HostResult, error) {
 			kind:      "http_" + strconv.Itoa(resp.StatusCode),
 		}
 	}
+	return decodeHostResult(resp.Body)
+}
+
+func decodeHostResult(body io.Reader) (HostResult, error) {
+	b, err := io.ReadAll(io.LimitReader(body, (1<<20)+1))
+	if err != nil {
+		return HostResult{}, boundary("relay.read", err)
+	}
 	var result HostResult
-	err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result)
+	if len(b) > 1<<20 {
+		return HostResult{}, &boundaryError{operation: "relay.decode", kind: "response_limit"}
+	}
+	err = json.Unmarshal(b, &result)
 	if err != nil {
 		return HostResult{}, &boundaryError{
 			operation: "relay.decode",
@@ -255,4 +271,14 @@ func relayPort() (int, error) {
 		return 0, &boundaryError{operation: "relay.port", kind: "config_invalid"}
 	}
 	return number, nil
+}
+
+func forwardingDisabled() bool {
+	value := os.Getenv("DEVSY_GH_FORWARDING")
+	return value == "disabled" || value == stateUnavailable
+}
+
+func localOnlySession() bool {
+	active := os.Getenv(sessionEnv)
+	return os.Getenv(authProbeEnv) == "1" || (active != "" && active == os.Getenv("GH_CONFIG_DIR"))
 }

@@ -2,6 +2,7 @@ package agentcontainer
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -32,7 +33,8 @@ import (
 type CredentialsServerCmd struct {
 	*flags.GlobalFlags
 
-	User string
+	User      string
+	HostOwner string
 
 	ConfigureGitHelper    bool
 	ConfigureGitHubHelper bool
@@ -62,6 +64,7 @@ func NewCredentialsServerCmd(flags *flags.GlobalFlags) *cobra.Command {
 	}
 	cliflags.Add(
 		credentialsServerCmd,
+		cliflags.String(&cmd.HostOwner, "host-owner", "manual", "Nonsecret host connection owner"),
 		cliflags.Bool(
 			&cmd.ConfigureGitHubHelper,
 			"configure-github-helper",
@@ -119,31 +122,43 @@ func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) error {
 	}
 
 	cmd.maybeForwardPorts(runCtx, tunnelClient)
+	githubState := "disabled"
 	if cmd.ConfigureGitHubHelper {
-		if err := ghcredentials.Install(port); err != nil {
+		result, installErr := ghcredentials.Install(runCtx, port, cmd.User)
+		githubState = result.Status
+		if err := installErr; err != nil {
 			log.Warnf("GitHub CLI wrapper installation unavailable: %v", err)
 		}
 	}
+	status := credentials.Readiness{
+		Version:       credentials.ReadinessVersion,
+		Owner:         cmd.User,
+		HostOwner:     cmd.HostOwner,
+		Instance:      rand.Text(),
+		GitHubAllowed: cmd.ConfigureGitHubHelper,
+		GitHubState:   githubState,
+	}
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- credentials.RunPreparedCredentialsServer(runCtx, ln, tunnelClient, status) }()
 
 	if err := cmd.configureDockerHelper(port); err != nil {
-		return err
+		log.Warnf("Docker credentials setup unavailable: %v", err)
 	}
 
 	if err := configureGitUserLocally(runCtx, cmd.User, tunnelClient); err != nil {
 		log.Warnf("error configuring git user: %v", err)
-		return err
 	}
 
 	cleanupGitHelper, err := cmd.configureGitCredentialHelper(runCtx, port)
 	if err != nil {
-		return err
+		log.Warnf("Git credentials setup unavailable: %v", err)
 	}
 	defer cleanupGitHelper()
 
 	cleanupGitSigning := cmd.configureGitSigningKey()
 	defer cleanupGitSigning()
 
-	return credentials.RunCredentialsServerWithListener(runCtx, ln, tunnelClient, cmd.User)
+	return <-serverDone
 }
 
 // errPortOwnedByAnotherSession marks a bind failure as another session

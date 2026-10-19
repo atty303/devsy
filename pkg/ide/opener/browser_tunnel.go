@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/devsy-org/devsy/pkg/client"
+	"github.com/devsy-org/devsy/pkg/config"
 	"github.com/devsy-org/devsy/pkg/flags/names"
 	pkglog "github.com/devsy-org/devsy/pkg/log"
 	"github.com/devsy-org/devsy/pkg/open"
@@ -71,6 +72,9 @@ func KillBrowserTunnel(contextName, workspaceID string) {
 	}
 
 	terminateTunnelProcess(state.PID)
+	if preparation, err := browserPreparation(contextName, workspaceID, state); err == nil {
+		preparation.Close()
+	}
 	_ = os.Remove(statePath)
 }
 
@@ -157,8 +161,9 @@ type inheritedListenerSetup struct {
 // browserIDEInvocation bundles the per-call IDE-specific knobs that aren't
 // part of the lower-level tunnel parameters.
 type browserIDEInvocation struct {
-	Label       string // e.g. "vscode", "jupyter", "rstudio" - used in user-facing log lines
-	OpenBrowser bool   // whether to launch a host browser pointing at TargetURL
+	Label              string // e.g. "vscode", "jupyter", "rstudio" - used in user-facing log lines
+	OpenBrowser        bool   // whether to launch a host browser pointing at TargetURL
+	RequirePreparation bool
 }
 
 // startDetachedBrowserTunnel spawns `devsy internal browser-tunnel ...` as a
@@ -182,6 +187,9 @@ func startDetachedBrowserTunnel(
 	openBrowser := inv.OpenBrowser
 	contextName := params.Client.Context()
 	workspaceID := params.Client.Workspace()
+	inv.RequirePreparation = params.DevsyConfig.ContextOption(
+		config.ContextOptionGitHubCLIForwarding,
+	) == config.BoolTrue
 
 	if _, ok := params.Client.(client.DaemonClient); ok {
 		return runDaemonBrowserTunnel(ctx, daemonTunnelArgs{
@@ -337,10 +345,11 @@ func recordHelperState(proc *os.Process, pid int, opts recordHelperStateOpts) er
 		return fmt.Errorf("identify helper pid %d: %w", pid, err)
 	}
 	state := TunnelState{
-		PID:        pid,
-		CreateTime: createTime,
-		TargetURL:  opts.TargetURL,
-		Label:      opts.Label,
+		PID:                pid,
+		CreateTime:         createTime,
+		TargetURL:          opts.TargetURL,
+		Label:              opts.Label,
+		PreparationVersion: 1,
 	}
 	if err := WriteTunnelState(opts.ContextName, opts.WorkspaceID, state); err != nil {
 		_ = proc.Kill()
@@ -469,15 +478,31 @@ func tryReuseExistingTunnel(
 			"%s browser tunnel already running (PID %d). Reusing existing tunnel at %s",
 			inv.Label, existing.PID, existing.TargetURL,
 		)
-		if inv.OpenBrowser {
-			go openBrowserAsync(ctx, existing.TargetURL)
-		}
+		inv.openReusedBrowser(ctx, contextName, workspaceID, existing)
 		return existing.TargetURL, true
 	}
 	if statePath, err := TunnelStateFilePath(contextName, workspaceID); err == nil {
 		_ = os.Remove(statePath)
 	}
 	return "", false
+}
+
+func (inv browserIDEInvocation) openReusedBrowser(
+	ctx context.Context,
+	contextName, workspaceID string,
+	existing *TunnelState,
+) {
+	if !inv.OpenBrowser {
+		return
+	}
+	if existing.PreparationVersion == 0 && !inv.RequirePreparation ||
+		waitBrowserPreparation(ctx, contextName, workspaceID, existing) {
+		go openBrowserAsync(ctx, existing.TargetURL)
+	} else if ctx.Err() == nil {
+		pkglog.Warn(
+			"Browser tunnel preparation unavailable; restart the workspace connection before opening its URL",
+		)
+	}
 }
 
 // daemonTunnelArgs bundles the parameters for runDaemonBrowserTunnel to keep
@@ -515,8 +540,10 @@ func runDaemonBrowserTunnel(ctx context.Context, a daemonTunnelArgs) (string, er
 	probeCtx, cancelProbe := context.WithCancel(ctx)
 	defer cancelProbe()
 
-	if a.OpenBrowser {
-		go openBrowserWhenReachable(probeCtx, a.TunnelParams.TargetURL)
+	a.TunnelParams.OnPrepared = func(context.Context) {
+		if a.OpenBrowser {
+			go openBrowserWhenReachable(probeCtx, a.TunnelParams.TargetURL)
+		}
 	}
 	return a.TunnelParams.TargetURL, tunnel.StartBrowserTunnel(ctx, a.TunnelParams)
 }

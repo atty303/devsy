@@ -1,11 +1,15 @@
+//go:build !windows
+
 package ghcredentials
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -20,17 +24,58 @@ func TestInstallWithSudoPreservesArgumentsAndFailure(t *testing.T) {
 	t.Setenv("PATH", dir)
 	t.Setenv("DEVSY_TEST_SUDO_ARGS", record)
 	t.Setenv("DEVSY_TEST_SUDO_EXIT", "0")
-	require.NoError(t, installWithSudo("/absolute path/devsy", 12049))
+	require.NoError(t, installWithSudo(context.Background(), "/absolute path/devsy", 12049))
 	root, err := os.OpenRoot(dir)
 	require.NoError(t, err)
 	defer func() { _ = root.Close() }()
 	args, err := root.ReadFile("args")
 	require.NoError(t, err)
-	require.Equal(t, "/absolute path/devsy\ninternal\ninstall-gh-wrapper\n12049\n", string(args))
+	require.Equal(
+		t,
+		"-n\n/absolute path/devsy\ninternal\ninstall-gh-wrapper\n12049\n",
+		string(args),
+	)
 	t.Setenv("DEVSY_TEST_SUDO_EXIT", "1")
 	var exit *exec.ExitError
-	require.ErrorAs(t, installWithSudo("/absolute path/devsy", 12049), &exit)
+	require.ErrorAs(t, installWithSudo(context.Background(), "/absolute path/devsy", 12049), &exit)
 	require.Equal(t, 1, exit.ExitCode())
+}
+
+func TestBackendDiscoveryPreservesMissingCLIBackupsAndUserShims(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gh")
+	t.Setenv("PATH", dir)
+	_, err := discoverBackend(path)
+	require.ErrorIs(t, err, exec.ErrNotFound)
+	require.NoFileExists(t, path)
+	writeTestExecutable(t, path+backupSuffix, []byte("#!/bin/sh\nprintf old"))
+	backend, err := discoverBackend(path)
+	require.NoError(t, err)
+	require.Equal(t, path+backupSuffix, backend)
+	writeTestExecutable(t, path, []byte("#!/bin/sh\nprintf fresh"))
+	backend, err = discoverBackend(path)
+	require.NoError(t, err)
+	require.Equal(t, path, backend)
+	//nolint:gosec // Execute only the dummy backend just written into this test-owned directory.
+	out, err := exec.Command(backend).Output()
+	require.NoError(t, err)
+	require.Equal(t, "fresh", string(out))
+	marker := filepath.Join(dir, "shim-ran")
+	writeTestExecutable(t, path, []byte("#!/bin/sh\ntouch '"+marker+"'\nprintf shim"))
+	_, err = discoverBackend(path)
+	require.NoError(t, err)
+	require.NoFileExists(t, marker, "discovery ran a user shim")
+}
+
+func TestInstallWithSudoCancellationDoesNotWaitForPasswordOrProcess(t *testing.T) {
+	dir := t.TempDir()
+	writeTestExecutable(t, filepath.Join(dir, "sudo"), []byte("#!/bin/sh\nexec /bin/sleep 10\n"))
+	t.Setenv("PATH", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	require.ErrorIs(t, installWithSudo(ctx, "/unused-agent", 12049), context.DeadlineExceeded)
+	require.Less(t, time.Since(started), time.Second)
 }
 
 const (

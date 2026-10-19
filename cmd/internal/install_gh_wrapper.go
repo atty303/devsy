@@ -14,7 +14,7 @@ func NewInstallGHWrapperCmd() *cobra.Command {
 		Use:    "install-gh-wrapper <port>",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(c *cobra.Command, args []string) error {
 			port, err := strconv.Atoi(args[0])
 			if err != nil || port < 1 || port > 65535 {
 				return errors.New("invalid credentials server port")
@@ -22,7 +22,7 @@ func NewInstallGHWrapperCmd() *cobra.Command {
 			if os.Geteuid() != 0 {
 				return errors.New("GitHub CLI wrapper installation requires root")
 			}
-			return ghcredentials.Install(port)
+			return ghcredentials.InstallPrepared(c.Context(), port)
 		},
 	}
 }

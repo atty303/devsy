@@ -144,6 +144,7 @@ type tunnelServer struct {
 	forwarder              netstat.Forwarder
 	allowGitCredentials    bool
 	allowGitHubCredentials bool
+	githubAccounts         func(context.Context) ghcredentials.HostResult
 	allowDockerCredentials bool
 	allowKubeConfig        bool
 	allowPlatformOptions   bool
@@ -310,7 +311,11 @@ func (t *tunnelServer) GitHubCredentials(
 	if !t.allowGitHubCredentials {
 		return nil, grpcstatus.Error(codes.PermissionDenied, "GitHub CLI credentials forbidden")
 	}
-	b, err := json.Marshal(ghcredentials.HostAccounts(ctx))
+	resolve := t.githubAccounts
+	if resolve == nil {
+		resolve = ghcredentials.HostAccounts
+	}
+	b, err := json.Marshal(resolve(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("encode GitHub CLI accounts")
 	}

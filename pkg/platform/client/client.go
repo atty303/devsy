@@ -126,7 +126,7 @@ func (c *client) RefreshSelf(ctx context.Context) error {
 		return fmt.Errorf("create mangement client: %w", err)
 	}
 
-	c.self, err = managementClient.Loft().
+	c.self, err = managementClient.Devsy().
 		ManagementV1().
 		Selves().
 		Create(ctx, &managementv1.Self{}, metav1.CreateOptions{})
@@ -159,7 +159,7 @@ func (c *client) Logout(ctx context.Context) error {
 		return fmt.Errorf("create management client: %w", err)
 	}
 
-	self, err := managementClient.Loft().
+	self, err := managementClient.Devsy().
 		ManagementV1().
 		Selves().
 		Create(ctx, &managementv1.Self{}, metav1.CreateOptions{})
@@ -168,7 +168,7 @@ func (c *client) Logout(ctx context.Context) error {
 	}
 
 	if self.Status.AccessKey != "" && self.Status.AccessKeyType == storagev1.AccessKeyTypeLogin {
-		err = managementClient.Loft().
+		err = managementClient.Devsy().
 			ManagementV1().
 			OwnedAccessKeys().
 			Delete(ctx, self.Status.AccessKey, metav1.DeleteOptions{})
@@ -231,7 +231,7 @@ type keyStruct struct {
 func verifyHost(host string) error {
 	if !strings.HasPrefix(host, "https") {
 		return fmt.Errorf(
-			"cannot log into a non https loft instance %q, make sure you have TLS enabled",
+			"cannot log into a non https devsy instance %q, make sure you have TLS enabled",
 			host,
 		)
 	}
@@ -387,7 +387,7 @@ func (c *client) deleteOldAccessKey() {
 		return
 	}
 
-	self, err := managementClient.Loft().
+	self, err := managementClient.Devsy().
 		ManagementV1().
 		Selves().
 		Create(context.TODO(), &managementv1.Self{}, metav1.CreateOptions{})
@@ -395,7 +395,7 @@ func (c *client) deleteOldAccessKey() {
 		return
 	}
 	if self.Status.AccessKey != "" && self.Status.AccessKeyType == storagev1.AccessKeyTypeLogin {
-		_ = managementClient.Loft().
+		_ = managementClient.Devsy().
 			ManagementV1().
 			OwnedAccessKeys().
 			Delete(context.TODO(), self.Status.AccessKey, metav1.DeleteOptions{})
@@ -409,7 +409,7 @@ func (c *client) verifyConnection() error {
 	}
 
 	// try to get self
-	_, err = managementClient.Loft().
+	_, err = managementClient.Devsy().
 		ManagementV1().
 		Selves().
 		Create(context.TODO(), &managementv1.Self{}, metav1.CreateOptions{})
@@ -422,7 +422,7 @@ func (c *client) verifyConnection() error {
 		var authErr x509.UnknownAuthorityError
 		if errors.As(urlError.Err, &authErr) {
 			return fmt.Errorf(
-				"unsafe login endpoint %q, if you wish to login into an insecure loft endpoint run with the '--insecure' flag",
+				"unsafe login endpoint %q, if you wish to login into an insecure devsy endpoint run with the '--insecure' flag",
 				c.config.Host,
 			)
 		}
@@ -431,7 +431,7 @@ func (c *client) verifyConnection() error {
 	return fmt.Errorf("error logging in: %w", err)
 }
 
-// VerifyVersion checks if the Loft version is compatible with this CLI version.
+// VerifyVersion checks if the Devsy version is compatible with this CLI version.
 func VerifyVersion(baseClient Client) error {
 	v, err := baseClient.Version()
 	if err != nil {

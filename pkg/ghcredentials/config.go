@@ -42,6 +42,16 @@ func resolvedFile(path string) (*os.File, error) {
 }
 
 func readFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 16<<20 {
+		return nil, errInvalidConfig
+	}
 	f, err := resolvedFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -160,6 +170,9 @@ func mergeYAML(before, after, latest []byte) ([]byte, error) {
 func mappingKeys(nodes ...*yaml.Node) map[string]bool {
 	keys := map[string]bool{}
 	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			keys[n.Content[i].Value] = true
 		}

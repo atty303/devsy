@@ -6,6 +6,7 @@ import (
 	managementv1 "github.com/devsy-org/api/pkg/apis/management/v1"
 	"github.com/devsy-org/devsy/pkg/client"
 	"github.com/devsy-org/devsy/pkg/config"
+	"github.com/devsy-org/devsy/pkg/credentials"
 	daemon "github.com/devsy-org/devsy/pkg/daemon/platform"
 	"github.com/devsy-org/devsy/pkg/tunnel"
 	"golang.org/x/crypto/ssh"
@@ -30,34 +31,56 @@ type credentialConfig struct {
 
 // StartServicesDaemon starts the services daemon for credential forwarding and port forwarding.
 func StartServicesDaemon(ctx context.Context, opts StartServicesDaemonOptions) error {
+	services, err := daemonServiceOptions(ctx, opts)
+	if err != nil {
+		return err
+	}
 	if opts.User == "" {
 		return nil
+	}
+	return tunnel.RunServices(ctx, services)
+}
+
+func StartPreparedServicesDaemon(
+	ctx context.Context,
+	opts StartServicesDaemonOptions,
+) credentials.Readiness {
+	services, err := daemonServiceOptions(ctx, opts)
+	if err != nil || opts.User == "" {
+		return credentials.Readiness{GitHubState: "unavailable"}
+	}
+	return tunnel.StartPreparedServices(ctx, services)
+}
+
+func daemonServiceOptions(
+	ctx context.Context,
+	opts StartServicesDaemonOptions,
+) (tunnel.RunServicesOptions, error) {
+	if opts.User == "" {
+		return tunnel.RunServicesOptions{}, nil
 	}
 
 	workspace, err := getWorkspace(ctx, opts.Client)
 	if err != nil {
-		return err
+		return tunnel.RunServicesOptions{}, err
 	}
 
 	credConfig := getCredentialConfig(opts.DevsyConfig, workspace)
 
-	return tunnel.RunServices(
-		ctx,
-		tunnel.RunServicesOptions{
-			DevsyConfig:                    opts.DevsyConfig,
-			ContainerClient:                opts.SSHClient,
-			User:                           opts.User,
-			ForwardPorts:                   opts.ForwardPorts,
-			ExtraPorts:                     opts.ExtraPorts,
-			PlatformOptions:                nil,
-			Workspace:                      opts.Client.WorkspaceConfig(),
-			ConfigureDockerCredentials:     credConfig.docker,
-			ConfigureGitCredentials:        credConfig.git,
-			ConfigureGitHubCredentials:     credConfig.github,
-			ConfigureGitSSHSignatureHelper: credConfig.gitSSHSignature,
-			GitSSHSigningKey:               opts.GitSSHSigningKey,
-		},
-	)
+	return tunnel.RunServicesOptions{
+		DevsyConfig:                    opts.DevsyConfig,
+		ContainerClient:                opts.SSHClient,
+		User:                           opts.User,
+		ForwardPorts:                   opts.ForwardPorts,
+		ExtraPorts:                     opts.ExtraPorts,
+		PlatformOptions:                nil,
+		Workspace:                      opts.Client.WorkspaceConfig(),
+		ConfigureDockerCredentials:     credConfig.docker,
+		ConfigureGitCredentials:        credConfig.git,
+		ConfigureGitHubCredentials:     credConfig.github,
+		ConfigureGitSSHSignatureHelper: credConfig.gitSSHSignature,
+		GitSSHSigningKey:               opts.GitSSHSigningKey,
+	}, nil
 }
 
 func getWorkspace(

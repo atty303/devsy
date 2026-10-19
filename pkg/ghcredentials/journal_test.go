@@ -1,0 +1,217 @@
+//go:build !windows
+
+package ghcredentials
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+)
+
+func journalSession(t *testing.T) *session {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	original := filepath.Join(root, "original")
+	writeTestFile(t, filepath.Join(original, configFile), "editor: vi\n")
+	s, err := startSession(context.Background(), original, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.lock.Close() })
+	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
+	s.Accounts = []Account{a}
+	s.Overlays = []overlayAccount{fingerprint(a)}
+	require.NoError(t, s.save())
+	hosts := mapping()
+	a.overlay(hosts)
+	b, err := yaml.Marshal(hosts)
+	require.NoError(t, err)
+	writeTestFile(t, filepath.Join(s.work(), hostsFile), string(b))
+	return s
+}
+
+func assertNoForwardedArtifacts(t *testing.T, dir string) {
+	t.Helper()
+	err := filepath.WalkDir(dir, func(path string, e fs.DirEntry, err error) error {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if e.IsDir() {
+			return nil
+		}
+		data, err := readHelperFile(path)
+		if err == nil {
+			require.False(
+				t,
+				bytes.Contains(data, []byte(testForwardedToken)),
+				"forwarded value retained in session artifact",
+			)
+		}
+		return err
+	})
+	require.NoError(t, err)
+}
+
+func TestJournalSanitizesBeforeOriginalReadAndLegacyRecovery(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "current", true: "legacy"}[legacy], func(t *testing.T) {
+			s := journalSession(t)
+			writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\n")
+			writeTestFile(t, filepath.Join(s.Original, configFile), "[invalid yaml")
+			if legacy {
+				b, err := json.Marshal(
+					map[string]any{"original": s.Original, "accounts": s.Accounts},
+				)
+				require.NoError(t, err)
+				writeTestFile(t, filepath.Join(s.dir, "session.json"), string(b))
+				require.NoError(t, s.lock.Close())
+				require.Error(t, recoverSession(context.Background(), s.dir))
+			} else {
+				require.Error(t, s.finish(context.Background()))
+			}
+			assertNoForwardedArtifacts(t, s.dir)
+			writeTestFile(t, filepath.Join(s.Original, configFile), "editor: vi\n")
+			require.NoError(t, recoverSession(context.Background(), s.dir))
+			assertNoForwardedArtifacts(t, filepath.Dir(s.dir))
+		})
+	}
+}
+
+func TestJournalCheckpointRecoveryNeverReplaysLaterLogout(t *testing.T) {
+	for _, stage := range []string{
+		"sanitized", "planned:config.yml", "published:config.yml", "applied:config.yml",
+		"planned:hosts.yml", "published:hosts.yml", "applied:hosts.yml",
+	} {
+		t.Run(stage, func(t *testing.T) {
+			s := journalSession(t)
+			writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\n")
+			writeTestFile(
+				t,
+				filepath.Join(s.work(), hostsFile),
+				authFixture("local-user", "dummy-local-login"),
+			)
+			s.checkpoint = func(at string) error {
+				if at == stage {
+					return errors.New("injected checkpoint interruption")
+				}
+				return nil
+			}
+			require.Error(t, s.finish(context.Background()))
+			assertNoForwardedArtifacts(t, s.dir)
+			// A new user operation after any partial publication must win recovery.
+			writeTestFile(
+				t,
+				filepath.Join(s.Original, hostsFile),
+				authFixture("new-user", "dummy-new-login"),
+			)
+			err := recoverSession(context.Background(), s.dir)
+			if err != nil {
+				require.ErrorIs(t, err, errAuthConflict)
+			}
+			b, err := readFile(filepath.Join(s.Original, hostsFile))
+			require.NoError(t, err)
+			n, err := decode(b)
+			require.NoError(t, err)
+			require.Equal(t, "new-user", get(get(n, testHost), "user").Value)
+			require.True(
+				t,
+				get(get(n, testHost), "oauth_token").Value == "dummy-new-login",
+				"recovery replayed old login",
+			)
+			require.NoError(t, recoverSession(context.Background(), s.dir))
+		})
+	}
+}
+
+func TestJournalMalformedWorkIsDiscardedWithoutRetainingForwardedToken(t *testing.T) {
+	s := journalSession(t)
+	writeTestFile(t, filepath.Join(s.work(), hostsFile), "[malformed "+testForwardedToken)
+	require.Error(t, s.finish(context.Background()))
+	assertNoForwardedArtifacts(t, s.dir)
+	require.NoError(t, recoverSession(context.Background(), s.dir))
+	require.NoFileExists(t, filepath.Join(s.Original, hostsFile))
+}
+
+func TestJournalBindsPublicationToSymlinkTarget(t *testing.T) {
+	s := journalSession(t)
+	one, two := filepath.Join(s.Original, "one"), filepath.Join(s.Original, "two")
+	writeTestFile(t, one, "editor: vi\n")
+	writeTestFile(t, two, "editor: other\n")
+	path := filepath.Join(s.Original, configFile)
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Symlink(one, path))
+	writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\n")
+	s.checkpoint = func(stage string) error {
+		if stage == "planned:config.yml" {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	require.Error(t, s.finish(context.Background()))
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Symlink(two, path))
+	require.ErrorIs(t, recoverSession(context.Background(), s.dir), errAuthConflict)
+	b, err := readFile(two)
+	require.NoError(t, err)
+	require.True(t, string(b) == "editor: other\n", "different symlink target overwritten")
+}
+
+func TestRecoveryLeavesLiveChildSessionIntact(t *testing.T) {
+	s := journalSession(t)
+	require.NoError(t, recoverSession(context.Background(), s.dir))
+	b, err := readFile(filepath.Join(s.work(), hostsFile))
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(b, []byte(testForwardedToken)), "live session was sanitized")
+	require.NoError(t, s.finish(context.Background()))
+}
+
+func TestRecoveryDoesNotResurrectLogoutReturningToPreimage(t *testing.T) {
+	for _, stage := range []string{"published:hosts.yml", "applied:hosts.yml"} {
+		t.Run(stage, func(t *testing.T) {
+			s := journalSession(t)
+			writeTestFile(
+				t,
+				filepath.Join(s.work(), hostsFile),
+				authFixture("local-user", "dummy-local-login"),
+			)
+			s.checkpoint = func(at string) error {
+				if at == stage {
+					return errors.New("injected")
+				}
+				return nil
+			}
+			require.Error(t, s.finish(context.Background()))
+			require.NoError(t, os.Remove(filepath.Join(s.Original, hostsFile)))
+			err := recoverSession(context.Background(), s.dir)
+			if err != nil {
+				require.ErrorIs(t, err, errAuthConflict)
+			}
+			require.NoFileExists(t, filepath.Join(s.Original, hostsFile))
+		})
+	}
+}
+
+func TestMalformedWorkingAuthenticationDoesNotDeleteLocalLogin(t *testing.T) {
+	s := journalSession(t)
+	local := authFixture("local-user", "dummy-local-login")
+	writeTestFile(t, filepath.Join(s.Original, hostsFile), local)
+	writeTestFile(t, filepath.Join(s.dir, "before", hostsFile), local)
+	writeTestFile(t, filepath.Join(s.work(), hostsFile), "[bad "+testForwardedToken)
+	require.Error(t, s.finish(context.Background()))
+	assertNoForwardedArtifacts(t, s.dir)
+	require.NoError(t, recoverSession(context.Background(), s.dir))
+	b, err := readFile(filepath.Join(s.Original, hostsFile))
+	require.NoError(t, err)
+	require.True(t, string(b) == local, "discarded work deleted original authentication")
+}

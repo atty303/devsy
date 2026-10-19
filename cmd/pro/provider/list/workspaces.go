@@ -51,7 +51,7 @@ func (cmd *WorkspacesCmd) Run(ctx context.Context) error {
 		return err
 	}
 
-	projectList, err := managementClient.Loft().
+	projectList, err := managementClient.Devsy().
 		ManagementV1().
 		Projects().
 		List(ctx, metav1.ListOptions{})
@@ -63,7 +63,7 @@ func (cmd *WorkspacesCmd) Run(ctx context.Context) error {
 		)
 	}
 
-	filterByOwner := os.Getenv(config.EnvLoftFilterByOwner) == config.BoolTrue
+	filterByOwner := os.Getenv(config.EnvFilterByOwner) == config.BoolTrue
 	workspaces := []*managementv1.DevsyWorkspaceInstance{}
 	for _, p := range projectList.Items {
 		workspaces = append(
@@ -98,7 +98,7 @@ func projectWorkspaces(
 	params projectWorkspacesParams,
 ) []*managementv1.DevsyWorkspaceInstance {
 	ns := project.ProjectNamespace(params.projectName)
-	workspaceList, err := params.managementClient.Loft().
+	workspaceList, err := params.managementClient.Devsy().
 		ManagementV1().
 		DevsyWorkspaceInstances(ns).
 		List(ctx, metav1.ListOptions{})

@@ -34,7 +34,7 @@ var ContextOptions = []ContextOption{
 	{
 		Name:        ContextOptionGitHubCLIForwarding,
 		Description: "Specifies if Devsy should forward host GitHub CLI authentication into the workspace",
-		Default:     BoolTrue,
+		Default:     BoolFalse,
 		Enum:        []string{BoolTrue, BoolFalse},
 	},
 	{

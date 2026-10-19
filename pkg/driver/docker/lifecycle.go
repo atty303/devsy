@@ -12,7 +12,6 @@ import (
 	"github.com/devsy-org/devsy/pkg/docker"
 	"github.com/devsy-org/devsy/pkg/driver"
 	"github.com/devsy-org/devsy/pkg/log"
-	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 const (
@@ -333,8 +332,9 @@ func (d *dockerDriver) RunImageDevContainer(
 }
 
 var (
-	imageInspectPollInterval = 500 * time.Millisecond
-	imageInspectPollTimeout  = 10 * time.Second
+	imageInspectPollInterval    = 500 * time.Millisecond
+	imageInspectPollMaxAttempts = 20
+	imageInspectAttemptTimeout  = 10 * time.Second
 )
 
 func (d *dockerDriver) EnsureImage(
@@ -378,30 +378,32 @@ func (d *dockerDriver) inspectImage(ctx context.Context, options *driver.RunOpti
 	return d.waitForLocalImage(ctx, options.Image)
 }
 
-// waitForLocalImage inspects image, retrying while the only failure is
-// ErrImageNotFound. Any other inspect error (e.g. daemon unreachable) stops
-// the retry immediately. Returns nil once found, or the last ErrImageNotFound
-// once imageInspectPollTimeout elapses without the image appearing.
+// waitForLocalImage retries image-not-found failures up to a bounded number
+// of attempts. Each inspection also has its own deadline so a stalled Docker
+// CLI cannot block workspace startup indefinitely.
 func (d *dockerDriver) waitForLocalImage(ctx context.Context, image string) error {
 	var lastErr error
-	pollErr := wait.PollUntilContextTimeout(
-		ctx, imageInspectPollInterval, imageInspectPollTimeout, true,
-		func(ctx context.Context) (bool, error) {
-			_, err := d.Docker.InspectImage(ctx, image, false)
-			if err == nil {
-				return true, nil
+	for attempt := 1; attempt <= imageInspectPollMaxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(imageInspectPollInterval):
 			}
-			if errors.Is(err, docker.ErrImageNotFound) {
-				lastErr = err
-				return false, nil
-			}
-			return false, err
-		},
-	)
-	if pollErr != nil && lastErr != nil {
-		return lastErr
+		}
+
+		inspectCtx, cancel := context.WithTimeout(ctx, imageInspectAttemptTimeout)
+		_, err := d.Docker.InspectImage(inspectCtx, image, false)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, docker.ErrImageNotFound) {
+			return err
+		}
+		lastErr = err
 	}
-	return pollErr
+	return lastErr
 }
 
 func (d *dockerDriver) startContainer(

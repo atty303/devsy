@@ -37,6 +37,9 @@ func errorKind(err error) string {
 	}{
 		{context.DeadlineExceeded, "timeout"},
 		{context.Canceled, "cancelled"},
+		{exec.ErrWaitDelay, "pipe_timeout"},
+		{errTokenOutputLimit, "output_limit"},
+		{errAuthConflict, "authentication_conflict"},
 		{os.ErrPermission, "permission_denied"},
 		{os.ErrNotExist, "not_found"},
 		{syscall.ECONNREFUSED, "connection_refused"},
@@ -81,3 +84,8 @@ func logFailure(message, operation string, err error, saving bool) {
 		log.Warnw(message, "operation", operation, "error_type", kind)
 	}
 }
+
+const (
+	stateAvailable   = "available"
+	stateUnavailable = "unavailable"
+)

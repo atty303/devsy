@@ -1,3 +1,5 @@
+//go:build !windows
+
 package ghcredentials
 
 import (
@@ -9,19 +11,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
-
-const (
-	testPathEnv        = "PATH=/usr/bin:/bin"
-	testForwardedToken = "dummy-forwarded-value"
-	testHost           = "github.example"
-	testUser           = "relay-user"
-)
-
-func writeTestFile(t *testing.T, path, content string) {
-	t.Helper()
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-}
 
 func TestSessionMergePreservesDotfilesAndConcurrentChanges(t *testing.T) {
 	root := t.TempDir()
@@ -159,7 +148,7 @@ func TestDanglingDotfilesSymlinkKeepsPendingChanges(t *testing.T) {
 	require.NoError(t, c.finish(context.Background()))
 }
 
-func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
+func TestSessionPreservesTokenlessRegisteredIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		user, tokenField, userBody string
 	}{
@@ -186,9 +175,10 @@ func TestSessionForwardsTokenlessRegistrations(t *testing.T) {
 			require.NoError(t, err)
 			n, err := decode(data)
 			require.NoError(t, err)
-			h := get(n, a.Host)
-			require.Equal(t, a.User, get(h, "user").Value)
-			require.Len(t, get(h, "users").Content, 2)
+			require.Empty(t, s.Accounts)
+			originalNode, err := decode([]byte(before))
+			require.NoError(t, err)
+			require.True(t, equal(n, originalNode), "registered guest identity was replaced")
 			require.NoError(t, s.finish(context.Background()))
 			got, err := readFile(filepath.Join(original, hostsFile))
 			require.NoError(t, err)

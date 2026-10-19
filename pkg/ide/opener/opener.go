@@ -272,20 +272,20 @@ func makeDaemonStartFunc(
 	params IDEParams,
 	forwardPorts bool,
 	extraPorts []string,
-) func(ctx context.Context) error {
+) func(ctx context.Context, prepared func()) error {
 	daemonClient, ok := params.Client.(client2.DaemonClient)
 	if !ok {
 		return nil
 	}
 
-	return func(ctx context.Context) error {
+	return func(ctx context.Context, prepared func()) error {
 		toolClient, _, err := daemonClient.SSHClients(ctx, params.User)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = toolClient.Close() }()
 
-		err = clientimplementation.StartServicesDaemon(
+		status := clientimplementation.StartPreparedServicesDaemon(
 			ctx,
 			clientimplementation.StartServicesDaemonOptions{
 				DevsyConfig:      params.DevsyConfig,
@@ -297,9 +297,8 @@ func makeDaemonStartFunc(
 				GitSSHSigningKey: params.GitSSHSigningKey,
 			},
 		)
-		if err != nil {
-			return err
-		}
+		pkglog.Debugw("browser credentials prepared", "status", status.GitHubState)
+		prepared()
 		<-ctx.Done()
 
 		return nil

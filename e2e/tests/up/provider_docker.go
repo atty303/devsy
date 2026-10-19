@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -47,12 +46,10 @@ var _ = ginkgo.Describe(
 		}, ginkgo.SpecTimeout(framework.TimeoutShort()))
 
 		ginkgo.It("existing running container", func(ctx context.Context) {
-			tempDir, err := framework.CopyToTempDir("tests/up/testdata/no-devcontainer")
-			framework.ExpectNoError(err)
-			ginkgo.DeferCleanup(framework.CleanupTempDir, dtc.initialDir, tempDir)
+			tempDir := framework.CopyTestdata("tests/up/testdata/no-devcontainer", dtc.initialDir)
 			ginkgo.DeferCleanup(dtc.f.DevsyWorkspaceDelete, tempDir)
 
-			err = dtc.dockerHelper.Run(
+			err := dtc.dockerHelper.Run(
 				ctx,
 				[]string{
 					"run",
@@ -269,9 +266,7 @@ var _ = ginkgo.Describe(
 		}, ginkgo.SpecTimeout(framework.TimeoutShort()))
 
 		ginkgo.It("custom image", func(ctx context.Context) {
-			if runtime.GOOS == "windows" {
-				ginkgo.Skip("skipping on windows")
-			}
+			framework.SkipOnWindows("skipping on windows")
 
 			tempDir, err := dtc.setupAndUp(
 				ctx,
