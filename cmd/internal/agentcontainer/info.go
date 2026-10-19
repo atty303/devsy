@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
@@ -22,18 +21,15 @@ import (
 )
 
 type containerInfo struct {
-	SSHCommand   string  `json:"sshCommand"`
-	SSHHost      string  `json:"sshHost"`
-	RemoteUser   string  `json:"remoteUser"`
-	CheckoutRoot *string `json:"checkoutRoot"`
-	Branch       *string `json:"branch"`
-	Commit       *string `json:"commit"`
+	SSHCommand string `json:"sshCommand"`
+	SSHHost    string `json:"sshHost"`
+	RemoteUser string `json:"remoteUser"`
 }
 
 func NewInfoCmd(globalFlags *flags.GlobalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "info",
-		Short: "Show this container's SSH connection and current Git checkout",
+		Short: "Show this container's SSH connection information",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			mode, err := output.ResolveMode(globalFlags.ResultFormat)
@@ -67,9 +63,6 @@ func readContainerInfo(ctx context.Context) (*containerInfo, error) {
 		RemoteUser: devconfig.GetRemoteUser(result),
 	}
 	info.SSHCommand = "ssh " + shellescape.Quote(info.RemoteUser+"@"+info.SSHHost)
-	if err := info.readCheckout(ctx); err != nil {
-		return nil, err
-	}
 	return info, nil
 }
 
@@ -105,146 +98,7 @@ func writeContainerInfo(w io.Writer, mode string, info *containerInfo) error {
 		{"SSH command", info.SSHCommand},
 		{"SSH host", info.SSHHost},
 		{"Remote user", info.RemoteUser},
-		{"Checkout root", infoValue(info.CheckoutRoot)},
-		{"Branch", infoValue(info.Branch)},
-		{"Commit", infoValue(info.Commit)},
 	}
 	_, err := fmt.Fprintln(w, table.Render([]string{"Field", "Value"}, rows))
 	return err
-}
-
-func infoValue(value *string) string {
-	if value == nil {
-		return "(none)"
-	}
-	return *value
-}
-
-func (info *containerInfo) readCheckout(ctx context.Context) error {
-	if err := validateCheckoutMetadata(ctx); err != nil {
-		return err
-	}
-	inside, err := infoGit(ctx, "rev-parse", "--is-inside-work-tree")
-	if err != nil {
-		if infoGitOutsideCheckout(err) {
-			return nil
-		}
-		return fmt.Errorf("resolve Git checkout root: %w", err)
-	}
-	if inside == "false" {
-		return nil
-	}
-	root, err := infoGit(ctx, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return fmt.Errorf("resolve Git checkout root: %w", err)
-	}
-	info.CheckoutRoot = &root
-	return info.readGitHead(ctx)
-}
-
-func infoGitOutsideCheckout(err error) bool {
-	exit, ok := errors.AsType[*exec.ExitError](err)
-	if !ok || exit.ExitCode() != 128 {
-		return false
-	}
-	for line := range strings.SplitSeq(string(exit.Stderr), "\n") {
-		if strings.HasPrefix(line, "fatal: not a git repository (or any ") {
-			return true
-		}
-	}
-	return false
-}
-
-func (info *containerInfo) readGitHead(ctx context.Context) error {
-	ref, err := infoGit(ctx, "symbolic-ref", "--quiet", "HEAD")
-	if err != nil && !infoGitExit(err, 1) {
-		return fmt.Errorf("resolve Git branch: %w", err)
-	}
-	if err == nil {
-		branch := strings.TrimPrefix(ref, "refs/heads/")
-		info.Branch = &branch
-	}
-	commit, err := infoGit(ctx, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		if info.Branch != nil {
-			_, refErr := infoGit(ctx, "show-ref", "--verify", "--quiet", ref)
-			if infoGitExit(refErr, 1) {
-				return nil
-			}
-		}
-		return fmt.Errorf("resolve Git commit: %w", err)
-	}
-	info.Commit = &commit
-	return nil
-}
-
-func infoGit(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = append(cmd.Args, args...)
-	cmd.Env = infoGitEnv()
-	raw, err := cmd.Output()
-	value := strings.TrimSuffix(string(raw), "\n")
-	if err != nil {
-		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
-			return value, fmt.Errorf(
-				"git %s: %w: %s",
-				strings.Join(args, " "),
-				err,
-				strings.TrimSpace(string(exit.Stderr)),
-			)
-		}
-		return value, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	}
-	return value, nil
-}
-
-func infoGitExit(err error, code int) bool {
-	exit, ok := errors.AsType[*exec.ExitError](err)
-	return ok && exit.ExitCode() == code
-}
-
-func infoGitEnv() []string {
-	env := make([]string, 0, len(os.Environ())+1)
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		switch key {
-		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_PREFIX", "LC_ALL":
-			continue
-		}
-		env = append(env, entry)
-	}
-	return append(env, "LC_ALL=C")
-}
-
-func validateCheckoutMetadata(ctx context.Context) error {
-	metadata, err := findCheckoutMetadata()
-	if err != nil || metadata == "" {
-		return err
-	}
-	if _, err := infoGit(ctx, "rev-parse", "--resolve-git-dir", metadata); err != nil {
-		return fmt.Errorf("resolve Git checkout metadata: %w", err)
-	}
-	return nil
-}
-
-func findCheckoutMetadata() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("resolve Git checkout directory: %w", err)
-	}
-	for {
-		metadata := filepath.Join(dir, ".git")
-		_, err := os.Lstat(metadata)
-		if err == nil {
-			return metadata, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect Git checkout metadata: %w", err)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", nil
-		}
-		dir = parent
-	}
 }

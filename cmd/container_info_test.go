@@ -74,7 +74,8 @@ func executeContainerInfo(t *testing.T, path []string, format string) (string, e
 }
 
 func TestContainerInfoEntrypoints(t *testing.T) {
-	containerInfoFixture(t, infoSetupFixture)
+	fixture := containerInfoFixture(t, infoSetupFixture)
+	t.Setenv("PATH", filepath.Dir(fixture))
 	t.Chdir(t.TempDir())
 	for _, path := range containerInfoEntrypoints() {
 		t.Run(path[0], func(t *testing.T) {
@@ -85,15 +86,17 @@ func TestContainerInfoEntrypoints(t *testing.T) {
 			require.Equal(t, map[string]any{
 				"sshCommand": "ssh configured-user@test-workspace.devsy",
 				"sshHost":    "test-workspace.devsy", "remoteUser": "configured-user",
-				"checkoutRoot": nil, "branch": nil, "commit": nil,
 			}, got)
 			text, err := executeContainerInfo(t, path, "plain")
 			require.NoError(t, err)
 			for _, value := range []string{
-				"Field", "Value", "SSH command", "SSH host", "Remote user", "Checkout root", "Branch", "Commit",
-				"ssh configured-user@test-workspace.devsy", "(none)",
+				"Field", "Value", "SSH command", "SSH host", "Remote user",
+				"ssh configured-user@test-workspace.devsy",
 			} {
 				require.Contains(t, text, value)
+			}
+			for _, omitted := range []string{"Checkout root", "Branch", "Commit", "Workspace folder"} {
+				require.NotContains(t, text, omitted)
 			}
 		})
 	}
