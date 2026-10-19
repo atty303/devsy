@@ -1,3 +1,61 @@
+diff --git a/e2e/tests/ssh/gh_credentials.go b/e2e/tests/ssh/gh_credentials.go
+index c3638e868..17405a798 100644
+--- a/e2e/tests/ssh/gh_credentials.go
++++ b/e2e/tests/ssh/gh_credentials.go
+@@ -21,6 +21,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/devsy-org/devsy/pkg/agent/tunnelserver"
++	"github.com/devsy-org/devsy/pkg/docker"
+ 	"github.com/onsi/ginkgo/v2"
+ 	"github.com/stretchr/testify/require"
+ )
+@@ -268,6 +269,19 @@ func startFixture(
+ 	require.NoError(t, err)
+ 	require.NoError(t, guest.Start())
+ 	t.Cleanup(func() {
++		if runtime.GOOS == "linux" {
++			// Restore private bind-mount ownership before removing the container.
++			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
++			defer cleanupCancel()
++			helper := &docker.DockerHelper{DockerCommand: "docker"}
++			args := []string{
++				"exec", "--user", "root", name, "chown", "-Rh",
++				fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "/fixture",
++			}
++			if err := helper.Run(cleanupCtx, args, docker.Streams{Stderr: os.Stderr}); err != nil {
++				t.Errorf("restore private fixture ownership: %v", err)
++			}
++		}
+ 		//nolint:gosec // name is the random, test-owned container name.
+ 		_ = exec.Command("docker", "rm", "-f", name).Run()
+ 		_ = guest.Wait()
+diff --git a/hack/ci/credential-relay.sh b/hack/ci/credential-relay.sh
+index bc763f3b3..161796f0d 100755
+--- a/hack/ci/credential-relay.sh
++++ b/hack/ci/credential-relay.sh
+@@ -41,6 +41,10 @@ cleanup() {
+ trap cleanup EXIT
+ if [[ ${1:-} = --cleanup ]]; then exit; fi
+ mkdir -p "$root/home" "$root/workspace/.devcontainer"
++# Linux setup chowns the bind mount to root. Keep these fixture directories
++# removable by the runner; their enclosing mktemp directory remains private.
++chmod 700 "$root"
++chmod a+rwx "$root/workspace" "$root/workspace/.devcontainer"
+ cd "$root/home"
+ cat > "$root/helper" <<'HELPER'
+ #!/bin/sh
+@@ -95,8 +99,8 @@ processes() {
+ }
+ assert_single_start() {
+   local name=${names[$1]} count
+-  count=$(grep -c 'execute SSH server command:.*credentials-server' "$root/$name.log")
+-  if [[ $count != 1 ]]; then echo "FAIL $name recreated its services command $count times" >&2; return 1; fi
++  count=$(grep -c 'waiting for credentials port:' "$root/$name.log" || true)
++  if [[ $count != 1 ]]; then echo "FAIL $name entered its credentials wait $count times" >&2; return 1; fi
+ }
+ winner() {
+   for index in 1 2 3; do
 diff --git a/pkg/agent/tunnelserver/tunnelserver_test.go b/pkg/agent/tunnelserver/tunnelserver_test.go
 index 1a60d1c85..db60ef211 100644
 --- a/pkg/agent/tunnelserver/tunnelserver_test.go
@@ -20,76 +78,3 @@ index 1a60d1c85..db60ef211 100644
  	return nil
  }
  
-diff --git a/pkg/driver/docker/lifecycle_test.go b/pkg/driver/docker/lifecycle_test.go
-index 2239fbae1..737c2cab1 100644
---- a/pkg/driver/docker/lifecycle_test.go
-+++ b/pkg/driver/docker/lifecycle_test.go
-@@ -92,7 +92,11 @@ func TestEnsureImage_BuiltImageNeverFoundDoesNotPull(t *testing.T) {
- 	withShortImageInspectPoll(t)
- 	marker := filepath.Join(t.TempDir(), "pulled")
- 	bin := fakeEnsureImageDocker(t, "Error response from daemon: No such image: x", marker)
-+
- 	d := &dockerDriver{Docker: &docker.DockerHelper{DockerCommand: bin}}
-+	// Warm the executable fixture before starting the deliberately short polling deadline.
-+	_, inspectErr := d.Docker.InspectImage(context.Background(), testImageRef, false)
-+	require.ErrorIs(t, inspectErr, docker.ErrImageNotFound)
- 
- 	err := d.EnsureImage(
- 		context.Background(),
-diff --git a/hack/ci/credential-relay.sh b/hack/ci/credential-relay.sh
---- a/hack/ci/credential-relay.sh
-+++ b/hack/ci/credential-relay.sh
-@@ -41,6 +41,10 @@
- trap cleanup EXIT
- if [[ ${1:-} = --cleanup ]]; then exit; fi
- mkdir -p "$root/home" "$root/workspace/.devcontainer"
-+# Linux setup chowns the bind mount to root. Keep these fixture directories
-+# removable by the runner; their enclosing mktemp directory remains private.
-+chmod 700 "$root"
-+chmod a+rwx "$root/workspace" "$root/workspace/.devcontainer"
- cd "$root/home"
- cat > "$root/helper" <<'HELPER'
- #!/bin/sh
-@@ -95,8 +99,8 @@
- }
- assert_single_start() {
-   local name=${names[$1]} count
--  count=$(grep -c 'execute SSH server command:.*credentials-server' "$root/$name.log")
--  if [[ $count != 1 ]]; then echo "FAIL $name recreated its services command $count times" >&2; return 1; fi
-+  count=$(grep -c 'waiting for credentials port:' "$root/$name.log" || true)
-+  if [[ $count != 1 ]]; then echo "FAIL $name entered its credentials wait $count times" >&2; return 1; fi
- }
- winner() {
-   for index in 1 2 3; do
-diff --git a/pkg/ghcredentials/wrapper_integration_test.go b/pkg/ghcredentials/wrapper_integration_test.go
-index d9d723315..e286d7586 100644
---- a/pkg/ghcredentials/wrapper_integration_test.go
-+++ b/pkg/ghcredentials/wrapper_integration_test.go
-@@ -24,6 +24,7 @@ import (
- 	"time"
- 
- 	"github.com/devsy-org/devsy/pkg/agent/tunnelserver"
-+	"github.com/devsy-org/devsy/pkg/docker"
- 	"github.com/stretchr/testify/require"
- )
- 
-@@ -241,6 +242,19 @@ exec dbus-run-session -- sh -c '
- 	require.NoError(t, err)
- 	require.NoError(t, guest.Start())
- 	t.Cleanup(func() {
-+		if runtime.GOOS == "linux" {
-+			// Restore private bind-mount ownership before removing the container.
-+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-+			defer cleanupCancel()
-+			helper := &docker.DockerHelper{DockerCommand: "docker"}
-+			args := []string{
-+				"exec", "--user", "root", name, "chown", "-Rh",
-+				fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "/fixture",
-+			}
-+			if err := helper.Run(cleanupCtx, args, docker.Streams{Stderr: os.Stderr}); err != nil {
-+				t.Errorf("restore private fixture ownership: %v", err)
-+			}
-+		}
- 		//nolint:gosec // name is the random, test-owned container name.
- 		_ = exec.Command("docker", "rm", "-f", name).Run()
- 		_ = guest.Wait()

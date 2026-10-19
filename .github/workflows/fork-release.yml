@@ -150,7 +150,9 @@ jobs:
                   bash hack/ci/credential-relay.sh "$RUNNER_TEMP/binaries/devsy-linux-amd64"
                 ;;
               gh-relay)
-                go test -tags=ghrelay ./pkg/ghcredentials -run '^TestRealGitHubCLI$' -v -count=1 -timeout=10m
+                mkdir -p e2e/bin
+                cp "$RUNNER_TEMP/binaries/devsy-linux-amd64" e2e/bin/devsy-linux-amd64
+                (cd e2e && go tool ginkgo --fail-on-empty --focus='should forward host GitHub CLI authentication without a container login' --timeout=10m)
                 ;;
               *) echo "Unknown required check: $check" >&2; exit 1 ;;
             esac
