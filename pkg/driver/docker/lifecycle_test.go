@@ -80,11 +80,11 @@ esac
 
 func withShortImageInspectPoll(t *testing.T) {
 	t.Helper()
-	origInterval, origTimeout := imageInspectPollInterval, imageInspectPollTimeout
+	origInterval, origMaxAttempts := imageInspectPollInterval, imageInspectPollMaxAttempts
 	imageInspectPollInterval = 5 * time.Millisecond
-	imageInspectPollTimeout = 300 * time.Millisecond
+	imageInspectPollMaxAttempts = 2
 	t.Cleanup(func() {
-		imageInspectPollInterval, imageInspectPollTimeout = origInterval, origTimeout
+		imageInspectPollInterval, imageInspectPollMaxAttempts = origInterval, origMaxAttempts
 	})
 }
 
@@ -114,7 +114,7 @@ func TestEnsureImage_BuiltImageNeverFoundDoesNotPull(t *testing.T) {
 
 func TestEnsureImage_TransientMissRecoversWithoutPulling(t *testing.T) {
 	withShortImageInspectPoll(t)
-	imageInspectPollTimeout = time.Second // must outlast a couple of retries
+	imageInspectPollMaxAttempts = 5 // must outlast a couple of retries
 
 	tmp := t.TempDir()
 	marker := filepath.Join(tmp, "pulled")
@@ -151,9 +151,33 @@ esac
 		"a transient miss that resolves on retry must not fall back to pull")
 }
 
+func TestWaitForLocalImage_BoundsEachInspectAttempt(t *testing.T) {
+	origTimeout := imageInspectAttemptTimeout
+	imageInspectAttemptTimeout = 100 * time.Millisecond
+	t.Cleanup(func() {
+		imageInspectAttemptTimeout = origTimeout
+	})
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "docker-fake")
+	script := `#!/bin/sh
+case "$1" in
+  inspect) sleep 5 ;;
+esac
+`
+	//nolint:gosec // test helper script needs exec bit
+	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	d := &dockerDriver{Docker: &docker.DockerHelper{DockerCommand: bin}}
+
+	start := time.Now()
+	err := d.waitForLocalImage(context.Background(), testImageRef)
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 2*time.Second)
+}
+
 func TestEnsureImage_ExternalImageSkipsRetryAndPullsImmediately(t *testing.T) {
 	withShortImageInspectPoll(t)
-	imageInspectPollTimeout = time.Second // would need to elapse if (wrongly) retried
 
 	tmp := t.TempDir()
 	marker := filepath.Join(tmp, "pulled")
@@ -176,17 +200,13 @@ esac
 	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
 	d := &dockerDriver{Docker: &docker.DockerHelper{DockerCommand: bin}}
 
-	start := time.Now()
 	err := d.EnsureImage(context.Background(), &driver.RunOptions{Image: testImageRef})
-	elapsed := time.Since(start)
 
 	require.NoError(t, err)
 	assert.FileExists(t, marker, "a not-found external image should trigger a pull")
 	attemptsRaw, readErr := os.ReadFile(attempts) //nolint:gosec // test-controlled path
 	require.NoError(t, readErr)
 	assert.Equal(t, "1\n", string(attemptsRaw), "must inspect exactly once, no retries")
-	assert.Less(t, elapsed, imageInspectPollTimeout,
-		"must not wait out the retry window for an image it never built")
 }
 
 func TestEnsureImage_RealErrorDoesNotPull(t *testing.T) {
