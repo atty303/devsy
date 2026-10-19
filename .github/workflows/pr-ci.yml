@@ -346,9 +346,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: container-info
-            runner: ubuntu-latest
-
           - label: context
             runner: ubuntu-latest
 

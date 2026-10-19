@@ -22,6 +22,7 @@ var _ = ginkgo.Describe("container connection information", ginkgo.Label("contai
 	ginkgo.It(
 		"should expose only configured SSH information through both entrypoints without Git",
 		ginkgo.SpecTimeout(framework.TimeoutShort()),
+		ginkgo.Label("integration"),
 		func(ctx context.Context) {
 			t := ginkgo.GinkgoT()
 			dir := t.TempDir()
