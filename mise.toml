@@ -125,7 +125,7 @@ description = "build devsy for e2e tests"
 run = [
   { task = "cli:build:dev" },
   "mkdir -p e2e/bin",
-  "cp dist/devsy-dev_linux_amd64_v1/devsy-linux-amd64 e2e/bin/devsy-linux-amd64",
+  'for binary in dist/devsy-dev_linux_*/devsy-linux-*; do cp "$binary" e2e/bin/; done',
   '''
 host_os="$(go env GOOS)"
 host_arch="$(go env GOARCH)"

@@ -996,9 +996,9 @@ var _ = ginkgo.Describe(
 					projectAPath = "tests/up-docker-compose/testdata/docker-compose-features-shared-image-a"
 					projectBPath = "tests/up-docker-compose/testdata/docker-compose-features-shared-image-b"
 				)
-				commandPresenceCheck := func(command string) string {
+				commandVersionCheck := func(command string) string {
 					return fmt.Sprintf(
-						"if command -v %s >/dev/null 2>&1; then echo present; else echo missing; fi",
+						"if %s --version >/dev/null 2>&1; then echo present; else echo missing; fi",
 						command,
 					)
 				}
@@ -1043,7 +1043,7 @@ var _ = ginkgo.Describe(
 						sharedImage,
 						"sh",
 						"-lc",
-						commandPresenceCheck("gh"),
+						commandVersionCheck("gh"),
 					},
 					docker.Streams{Stdout: &hostGhOut, Stderr: io.Discard},
 				)
@@ -1067,7 +1067,7 @@ var _ = ginkgo.Describe(
 				ghLookupOutput, err := tc.f.DevsySSH(
 					ctx,
 					tempDirB,
-					fmt.Sprintf("sh -lc %q", commandPresenceCheck("gh")),
+					fmt.Sprintf("sh -lc %q", commandVersionCheck("gh")),
 				)
 				framework.ExpectNoError(err)
 				gomega.Expect(strings.TrimSpace(ghLookupOutput)).
@@ -1081,7 +1081,7 @@ var _ = ginkgo.Describe(
 				nodeLookupOutput, err := tc.f.DevsySSH(
 					ctx,
 					tempDirA,
-					fmt.Sprintf("sh -lc %q", commandPresenceCheck("node")),
+					fmt.Sprintf("sh -lc %q", commandVersionCheck("node")),
 				)
 				framework.ExpectNoError(err)
 				gomega.Expect(strings.TrimSpace(nodeLookupOutput)).
