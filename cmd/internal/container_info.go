@@ -1,4 +1,4 @@
-package agentcontainer
+package cmdinternal
 
 import (
 	"context"
@@ -26,7 +26,7 @@ type containerInfo struct {
 	RemoteUser string `json:"remoteUser"`
 }
 
-func NewInfoCmd(globalFlags *flags.GlobalFlags) *cobra.Command {
+func newContainerInfoCmd(globalFlags *flags.GlobalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "info",
 		Short: "Show this container's SSH connection information",

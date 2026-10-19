@@ -13,11 +13,6 @@ import (
 	"github.com/onsi/gomega"
 )
 
-const (
-	containerCommand = "container"
-	infoCommand      = "info"
-)
-
 var _ = ginkgo.Describe("container connection information", ginkgo.Label("container-info"), func() {
 	ginkgo.It(
 		"should show the container's SSH connection details",
@@ -56,51 +51,47 @@ var _ = ginkgo.Describe("container connection information", ginkgo.Label("contai
 			cwd, err := os.Getwd()
 			framework.ExpectNoError(err)
 			f := framework.NewDefaultFramework(filepath.Join(cwd, "bin"))
-			for _, entry := range [][]string{
-				{containerCommand, infoCommand},
-				{"internal", "agent", containerCommand, infoCommand},
+			args := []string{
+				"container",
+				"info",
+				"--home",
+				t.TempDir(),
+				"--context",
+				"not-configured",
+				"--provider",
+				"not-configured",
+				"--result-format",
+				"json",
+			}
+			stdout, stderr, err := f.ExecCommandCapture(ctx, args)
+			framework.ExpectNoError(err)
+			gomega.Expect(stderr).To(gomega.BeEmpty())
+			var got map[string]any
+			framework.ExpectNoError(json.Unmarshal([]byte(stdout), &got))
+			gomega.Expect(got).To(gomega.Equal(map[string]any{
+				"sshCommand": "ssh configured-user@test-workspace.devsy",
+				"sshHost":    "test-workspace.devsy", "remoteUser": "configured-user",
+			}))
+			args[len(args)-1] = "plain"
+			stdout, stderr, err = f.ExecCommandCapture(ctx, args)
+			framework.ExpectNoError(err)
+			gomega.Expect(stderr).To(gomega.BeEmpty())
+			for _, value := range []string{
+				"Field", "Value", "SSH command", "SSH host", "Remote user",
+				"ssh configured-user@test-workspace.devsy",
 			} {
-				args := append(
-					entry,
-					"--home",
-					t.TempDir(),
-					"--context",
-					"not-configured",
-					"--provider",
-					"not-configured",
-					"--result-format",
-					"json",
-				)
-				stdout, stderr, err := f.ExecCommandCapture(ctx, args)
-				framework.ExpectNoError(err)
-				gomega.Expect(stderr).To(gomega.BeEmpty())
-				var got map[string]any
-				framework.ExpectNoError(json.Unmarshal([]byte(stdout), &got))
-				gomega.Expect(got).To(gomega.Equal(map[string]any{
-					"sshCommand": "ssh configured-user@test-workspace.devsy",
-					"sshHost":    "test-workspace.devsy", "remoteUser": "configured-user",
-				}))
-				args[len(args)-1] = "plain"
-				stdout, stderr, err = f.ExecCommandCapture(ctx, args)
-				framework.ExpectNoError(err)
-				gomega.Expect(stderr).To(gomega.BeEmpty())
-				for _, value := range []string{
-					"Field", "Value", "SSH command", "SSH host", "Remote user",
-					"ssh configured-user@test-workspace.devsy",
-				} {
-					gomega.Expect(stdout).To(gomega.ContainSubstring(value))
-				}
-				for _, omitted := range []string{
-					"do-not-output", "wrong-os-user",
-				} {
-					gomega.Expect(stdout).NotTo(gomega.ContainSubstring(omitted))
-				}
+				gomega.Expect(stdout).To(gomega.ContainSubstring(value))
+			}
+			for _, omitted := range []string{
+				"do-not-output", "wrong-os-user",
+			} {
+				gomega.Expect(stdout).NotTo(gomega.ContainSubstring(omitted))
 			}
 			t.Setenv(config.EnvWorkspaceID, "")
-			stdout, stderr, err := f.ExecCommandCapture(
+			stdout, stderr, err = f.ExecCommandCapture(
 				ctx,
 				[]string{
-					containerCommand,
+					"container",
 					"info",
 					"--home",
 					t.TempDir(),

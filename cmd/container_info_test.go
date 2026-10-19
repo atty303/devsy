@@ -15,8 +15,6 @@ import (
 )
 
 const (
-	infoContainerCommand = "container"
-	infoCommand          = "info"
 	infoWorkspaceID      = "test-workspace"
 	infoIncompleteResult = "incomplete or failed"
 	infoSetupFixture     = `{
@@ -50,15 +48,15 @@ func containerInfoFixture(t *testing.T, result string) string {
 	return fixture
 }
 
-func executeContainerInfo(t *testing.T, path []string, format string) (string, error) {
+func executeContainerInfo(t *testing.T, format string) (string, error) {
 	t.Helper()
 	root, _ := BuildRoot()
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	args := append([]string{}, path...)
-	args = append(
-		args,
+	args := []string{
+		"container",
+		"info",
 		"--home",
 		t.TempDir(),
 		"--context",
@@ -67,36 +65,32 @@ func executeContainerInfo(t *testing.T, path []string, format string) (string, e
 		"not-configured",
 		"--result-format",
 		format,
-	)
+	}
 	root.SetArgs(args)
 	err := root.Execute()
 	return out.String(), err
 }
 
-func TestContainerInfoEntrypoints(t *testing.T) {
+func TestContainerInfo(t *testing.T) {
 	containerInfoFixture(t, infoSetupFixture)
-	for _, path := range containerInfoEntrypoints() {
-		t.Run(path[0], func(t *testing.T) {
-			raw, err := executeContainerInfo(t, path, "json")
-			require.NoError(t, err)
-			var got map[string]any
-			require.NoError(t, json.Unmarshal([]byte(raw), &got))
-			require.Equal(t, map[string]any{
-				"sshCommand": "ssh configured-user@test-workspace.devsy",
-				"sshHost":    "test-workspace.devsy", "remoteUser": "configured-user",
-			}, got)
-			text, err := executeContainerInfo(t, path, "plain")
-			require.NoError(t, err)
-			for _, value := range []string{
-				"Field", "Value", "SSH command", "SSH host", "Remote user",
-				"ssh configured-user@test-workspace.devsy",
-			} {
-				require.Contains(t, text, value)
-			}
-			for _, omitted := range []string{"do-not-output", "wrong-os-user"} {
-				require.NotContains(t, text, omitted)
-			}
-		})
+	raw, err := executeContainerInfo(t, "json")
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &got))
+	require.Equal(t, map[string]any{
+		"sshCommand": "ssh configured-user@test-workspace.devsy",
+		"sshHost":    "test-workspace.devsy", "remoteUser": "configured-user",
+	}, got)
+	text, err := executeContainerInfo(t, "plain")
+	require.NoError(t, err)
+	for _, value := range []string{
+		"Field", "Value", "SSH command", "SSH host", "Remote user",
+		"ssh configured-user@test-workspace.devsy",
+	} {
+		require.Contains(t, text, value)
+	}
+	for _, omitted := range []string{"do-not-output", "wrong-os-user"} {
+		require.NotContains(t, text, omitted)
 	}
 }
 
@@ -115,11 +109,9 @@ func TestContainerInfoSetupFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			containerInfoFixture(t, tt.result)
 			t.Setenv(config.EnvWorkspaceID, tt.workspaceID)
-			for _, path := range containerInfoEntrypoints() {
-				raw, err := executeContainerInfo(t, path, "json")
-				require.ErrorContains(t, err, tt.want)
-				require.Empty(t, raw)
-			}
+			raw, err := executeContainerInfo(t, "json")
+			require.ErrorContains(t, err, tt.want)
+			require.Empty(t, raw)
 		})
 	}
 }
@@ -127,22 +119,15 @@ func TestContainerInfoSetupFailures(t *testing.T) {
 func TestContainerInfoReadFailure(t *testing.T) {
 	fixture := containerInfoFixture(t, infoSetupFixture)
 	require.NoError(t, os.Remove(fixture))
-	raw, err := executeContainerInfo(t, []string{infoContainerCommand, infoCommand}, "json")
+	raw, err := executeContainerInfo(t, "json")
 	require.ErrorContains(t, err, "read selected container setup result")
 	require.Empty(t, raw)
-}
-
-func containerInfoEntrypoints() [][]string {
-	return [][]string{
-		{infoContainerCommand, infoCommand},
-		{"internal", "agent", infoContainerCommand, infoCommand},
-	}
 }
 
 func TestContainerInfoFailureRendering(t *testing.T) {
 	fixture := containerInfoFixture(t, infoSetupFixture)
 	require.NoError(t, os.Remove(fixture))
-	_, err := executeContainerInfo(t, containerInfoEntrypoints()[0], "json")
+	_, err := executeContainerInfo(t, "json")
 	require.Error(t, err)
 	for _, machine := range []bool{false, true} {
 		reader, writer, pipeErr := os.Pipe()
