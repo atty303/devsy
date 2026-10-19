@@ -16,6 +16,15 @@ func NewTunnelClient(
 	reader io.Reader,
 	writer io.WriteCloser,
 ) (tunnel.TunnelClient, error) {
+	return NewTunnelClientWithContext(context.Background(), reader, writer)
+}
+
+// NewTunnelClientWithContext closes the RPC connection when its owner ends.
+func NewTunnelClientWithContext(
+	ctx context.Context,
+	reader io.Reader,
+	writer io.WriteCloser,
+) (tunnel.TunnelClient, error) {
 	pipe := stdio.NewStdioStream(reader, writer)
 
 	// After moving from deprecated grpc.Dial to grpc.NewClient we need to setup resolver first
@@ -32,6 +41,7 @@ func NewTunnelClient(
 	if err != nil {
 		return nil, err
 	}
+	context.AfterFunc(ctx, func() { _ = conn.Close() })
 
 	c := tunnel.NewTunnelClient(conn)
 
