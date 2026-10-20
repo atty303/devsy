@@ -42,3 +42,22 @@ func TestNativeConfigDirectoryPrecedenceAndEmptyValues(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, os.Getenv("GH_CONFIG_DIR"), got)
 }
+
+func TestNativeConfigRejectsTrailingDocumentsAndMalformedContent(t *testing.T) {
+	for _, data := range []string{
+		"{}\ninvalid.test:\n  users: [alice, bob]\n",
+		"{}\n---\neditor: newer\n",
+		"{}\n---\n",
+		"{}\n...\n[malformed",
+	} {
+		_, err := decode([]byte(data))
+		require.ErrorIs(t, err, errInvalidConfig)
+	}
+}
+
+func TestNativeConfigAcceptsCompleteSingleDocuments(t *testing.T) {
+	for _, data := range []string{"", "# comment\n", "{}\n", "---\neditor: vi\n...\n# tail\n", "custom: [one, two]\n"} {
+		_, err := decode([]byte(data))
+		require.NoError(t, err)
+	}
+}

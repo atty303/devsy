@@ -1,6 +1,7 @@
 package ghcredentials
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -12,8 +13,11 @@ import (
 )
 
 const (
-	hostsFile  = "hosts.yml"
-	configFile = "config.yml"
+	hostsFile = "hosts.yml"
+	// #nosec G101 -- YAML field name, not a credential.
+	oauthTokenKey = "oauth_token"
+	activeUserKey = "user"
+	configFile    = "config.yml"
 )
 
 func ConfigDir() (string, error) {
@@ -68,9 +72,14 @@ func readFile(path string) ([]byte, error) {
 }
 
 func decode(data []byte) (*yaml.Node, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	if err := decoder.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
 		// YAML errors may include credential values.
+		return nil, errInvalidConfig
+	}
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errInvalidConfig
 	}
 	if len(doc.Content) == 0 {

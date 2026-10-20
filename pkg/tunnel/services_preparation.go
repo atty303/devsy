@@ -39,7 +39,13 @@ type servicePreparation struct {
 
 func (p servicePreparation) start(ctx context.Context, enabled bool) credentials.Readiness {
 	done := make(chan error, 1)
-	go func() { done <- p.run() }()
+	go func() {
+		err := p.run()
+		if err != nil && ctx.Err() == nil {
+			log.Debug("credential services stopped unexpectedly")
+		}
+		done <- err
+	}()
 	if !enabled {
 		return credentials.Readiness{GitHubState: "disabled"}
 	}
@@ -61,7 +67,6 @@ func (p servicePreparation) await(
 			return status
 		case err := <-done:
 			if err != nil {
-				log.Debug("credential services preparation unavailable")
 				return credentials.Readiness{GitHubState: credentialsUnavailable}
 			}
 			done = nil

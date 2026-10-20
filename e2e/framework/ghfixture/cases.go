@@ -1,6 +1,20 @@
 package ghfixture
 
 var ExpectedChecks = []string{
+	"malformed working hosts: alias prepared",
+	"malformed working hosts: child exit preserved",
+	"malformed working hosts: lost intent reported",
+	"malformed working hosts: original authentication preserved",
+	"malformed working hosts: forwarded credentials scrubbed",
+	"malformed working hosts: next invocation recovers",
+	"malformed latest hosts: alias prepared",
+	"malformed latest hosts: mutation reached barrier",
+	"malformed latest hosts: child exit preserved",
+	"malformed latest hosts: pending writeback sanitized",
+	"malformed latest hosts: repeated recovery preserves invalid original and CLI exit",
+	"malformed latest hosts: repaired original recovers",
+	"malformed latest hosts: deliberate local login preserved",
+	"malformed latest hosts: forwarded credentials absent from artifacts",
 	"auth race different hosts: alias prepared",
 	"auth race different hosts: mutation reached barrier",
 	"auth race different hosts: parallel login succeeds",

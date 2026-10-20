@@ -28,7 +28,7 @@ func TestBrowserAutoOpenWaitsForInstallationAndServing(t *testing.T) {
 			if !waitPreparationSignal(ctx, serving) {
 				return credentials.Readiness{GitHubState: credentialsUnavailable}
 			}
-			return credentials.Readiness{GitHubState: "installed"}
+			return credentials.Readiness{GitHubState: installedPreparation}
 		},
 	}
 	go func() {

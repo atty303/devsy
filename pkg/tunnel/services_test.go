@@ -163,7 +163,7 @@ func TestOptionalGitHubServiceFailurePreservesUnrelatedServices(t *testing.T) {
 }
 
 func TestOptionalGitHubServiceDoesNotRetrySuccessDisabledOrCanceled(t *testing.T) {
-	for _, mode := range []string{"success", "disabled", "canceled"} {
+	for _, mode := range []string{"success", disabledPreparation, "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -177,7 +177,7 @@ func TestOptionalGitHubServiceDoesNotRetrySuccessDisabledOrCanceled(t *testing.T
 			}
 			err := runOptionalGitHubServices(
 				ctx,
-				RunServicesOptions{ConfigureGitHubCredentials: mode != "disabled"},
+				RunServicesOptions{ConfigureGitHubCredentials: mode != disabledPreparation},
 				func(RunServicesOptions) error {
 					calls++
 					return want

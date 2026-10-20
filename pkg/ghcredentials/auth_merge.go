@@ -32,14 +32,14 @@ func authentication(h *yaml.Node) *yaml.Node {
 		return nil
 	}
 	a := mapping()
-	for _, key := range []string{"user", "oauth_token"} {
+	for _, key := range []string{activeUserKey, oauthTokenKey} {
 		put(a, key, cloneNode(get(h, key)))
 	}
 	if users := get(h, "users"); users != nil {
 		registrations := mapping()
 		for i := 0; i+1 < len(users.Content); i += 2 {
 			u := mapping()
-			put(u, "oauth_token", cloneNode(get(users.Content[i+1], "oauth_token")))
+			put(u, oauthTokenKey, cloneNode(get(users.Content[i+1], oauthTokenKey)))
 			put(registrations, users.Content[i].Value, u)
 		}
 		if len(registrations.Content) > 0 {
@@ -57,12 +57,12 @@ func preferences(h *yaml.Node) *yaml.Node {
 		return nil
 	}
 	p := cloneNode(h)
-	put(p, "user", nil)
-	put(p, "oauth_token", nil)
+	put(p, activeUserKey, nil)
+	put(p, oauthTokenKey, nil)
 	if users := get(p, "users"); users != nil {
 		for _, key := range sortedKeys(users) {
 			u := get(users, key)
-			put(u, "oauth_token", nil)
+			put(u, oauthTokenKey, nil)
 			if u == nil || len(u.Content) == 0 {
 				put(users, key, nil)
 			}
@@ -88,15 +88,15 @@ func sortedKeys(nodes ...*yaml.Node) []string {
 }
 
 func mergeHosts(before, desired, latest []byte) ([]byte, error) {
-	b, err := decode(before)
+	b, err := decodeHosts(before)
 	if err != nil {
 		return nil, err
 	}
-	d, err := decode(desired)
+	d, err := decodeHosts(desired)
 	if err != nil {
 		return nil, err
 	}
-	l, err := decode(latest)
+	l, err := decodeHosts(latest)
 	if err != nil {
 		return nil, err
 	}
@@ -150,13 +150,13 @@ func selectAuthentication(base, want, current *yaml.Node) (*yaml.Node, error) {
 
 func applyAuthentication(p, chosen *yaml.Node) {
 	removeUnregisteredPreferences(p, get(chosen, "users"))
-	for _, key := range []string{"user", "oauth_token"} {
+	for _, key := range []string{activeUserKey, oauthTokenKey} {
 		put(p, key, cloneNode(get(chosen, key)))
 	}
 	users := get(chosen, "users")
 	for _, user := range sortedKeys(users) {
 		u := ensure(ensure(p, "users"), user)
-		put(u, "oauth_token", cloneNode(get(get(users, user), "oauth_token")))
+		put(u, oauthTokenKey, cloneNode(get(get(users, user), oauthTokenKey)))
 	}
 }
 

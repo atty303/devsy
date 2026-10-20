@@ -215,3 +215,105 @@ func TestMalformedWorkingAuthenticationDoesNotDeleteLocalLogin(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, string(b) == local, "discarded work deleted original authentication")
 }
+
+func TestJournalMalformedAuthenticationIsScrubbedBeforeRecovery(t *testing.T) {
+	for _, body := range []string{"users: [a, b]", "users:\n    alice: [a, b]", "oauth_token: [a, b]"} {
+		t.Run(body, func(t *testing.T) {
+			s := journalSession(t)
+			local := authFixture("local-user", "dummy-local-login")
+			writeTestFile(t, filepath.Join(s.Original, hostsFile), local)
+			writeTestFile(t, filepath.Join(s.dir, "before", hostsFile), local)
+			writeTestFile(
+				t,
+				filepath.Join(s.work(), hostsFile),
+				"github.com:\n  "+body+"\n  extra: "+testForwardedToken+"\n",
+			)
+			require.ErrorIs(t, s.finish(context.Background()), errLostIntent)
+			assertNoForwardedArtifacts(t, s.dir)
+			require.NoError(t, recoverSession(context.Background(), s.dir))
+			saved, err := readFile(filepath.Join(s.Original, hostsFile))
+			require.NoError(t, err)
+			require.True(
+				t,
+				string(saved) == local,
+				"malformed work changed original authentication",
+			)
+		})
+	}
+}
+
+func TestJournalMalformedLatestAuthenticationRemainsPendingUntilRepaired(t *testing.T) {
+	for _, tc := range []struct{ name, data string }{
+		{"structure", "github.com:\n  users: [a, b]\n"},
+		{"trailing content", "{}\nignored.test:\n  user: newer-user\n"},
+		{"second document", "{}\n---\nignored.test:\n  user: newer-user\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			malformed := tc.data
+			s := journalSession(t)
+			local := authFixture("local-user", "dummy-local-login")
+			writeTestFile(t, filepath.Join(s.work(), hostsFile), local)
+			path := filepath.Join(s.Original, hostsFile)
+			writeTestFile(t, path, malformed)
+			require.ErrorIs(t, s.finish(context.Background()), errInvalidConfig)
+			for range 2 {
+				assertNoForwardedArtifacts(t, s.dir)
+				require.ErrorIs(t, recoverSession(context.Background(), s.dir), errInvalidConfig)
+				saved, err := readFile(path)
+				require.NoError(t, err)
+				require.Equal(t, malformed, string(saved))
+			}
+			require.NoError(t, os.Remove(path))
+			require.NoError(t, recoverSession(context.Background(), s.dir))
+			require.NoError(t, recoverSession(context.Background(), s.dir))
+			saved, err := readFile(path)
+			require.NoError(t, err)
+			want, err := decodeHosts([]byte(local))
+			require.NoError(t, err)
+			got, err := decodeHosts(saved)
+			require.NoError(t, err)
+			require.True(t, equal(want, got), "recovery changed deliberate local authentication")
+			assertNoForwardedArtifacts(t, filepath.Dir(s.dir))
+		})
+	}
+}
+
+func TestJournalPreservesSecureLoginEmptyStringRegistration(t *testing.T) {
+	s := journalSession(t)
+	working := testHost + ":\n  user: local-user\n  users:\n    " + testUser +
+		":\n      oauth_token: " + testForwardedToken + "\n    local-user: \"\"\n"
+	writeTestFile(t, filepath.Join(s.work(), hostsFile), working)
+	require.NoError(t, s.finish(context.Background()))
+	assertNoForwardedArtifacts(t, filepath.Dir(s.dir))
+	saved, err := readFile(filepath.Join(s.Original, hostsFile))
+	require.NoError(t, err)
+	n, err := decodeHosts(saved)
+	require.NoError(t, err)
+	host := get(n, testHost)
+	require.Equal(t, "local-user", get(host, "user").Value)
+	require.NotNil(t, get(get(host, "users"), "local-user"))
+	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
+	next, err := startSession(context.Background(), s.Original, []Account{a})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = next.lock.Close() })
+	require.NoError(t, next.inject(context.Background(), "/usr/bin/false", nil))
+	require.Empty(t, next.Accounts, "unavailable keyring must preserve the registered guest")
+	require.NoError(t, next.finish(context.Background()))
+}
+
+func TestJournalTrailingWorkingAuthenticationIsScrubbedWithLostIntent(t *testing.T) {
+	for _, prefix := range []string{"{}\n", "{}\n---\n"} {
+		t.Run(prefix, func(t *testing.T) {
+			s := journalSession(t)
+			writeTestFile(
+				t,
+				filepath.Join(s.work(), hostsFile),
+				prefix+authFixture(testUser, testForwardedToken),
+			)
+			require.ErrorIs(t, s.finish(context.Background()), errLostIntent)
+			assertNoForwardedArtifacts(t, s.dir)
+			require.NoError(t, recoverSession(context.Background(), s.dir))
+			require.NoFileExists(t, filepath.Join(s.Original, hostsFile))
+		})
+	}
+}

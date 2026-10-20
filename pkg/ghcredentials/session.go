@@ -339,7 +339,7 @@ func (s *session) inject(ctx context.Context, binary string, env []string) error
 	if err != nil {
 		return boundary("config.read", err)
 	}
-	hosts, err := decode(b)
+	hosts, err := decodeHosts(b)
 	if err != nil {
 		return boundary("config.decode", err)
 	}
@@ -417,11 +417,11 @@ func copyConfigFiles(src, dst string) error {
 }
 
 func (s *session) strip(before, data []byte) ([]byte, error) {
-	original, err := decode(before)
+	original, err := decodeHosts(before)
 	if err != nil {
 		return nil, err
 	}
-	hosts, err := decode(data)
+	hosts, err := decodeHosts(data)
 	if err != nil {
 		return nil, err
 	}

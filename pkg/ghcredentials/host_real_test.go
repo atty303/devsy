@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -53,4 +55,30 @@ enterprise.example.invalid:
 		}),
 	)
 	require.Equal(t, "dummy-unrelated-environment-token", os.Getenv("GH_TOKEN"))
+}
+
+func TestNativeRealCLIScalarUsernamesAcceptedByRelay(t *testing.T) {
+	requireRealGH(t)
+	dir := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", dir)
+	binary, err := exec.LookPath("gh")
+	require.NoError(t, err)
+	const host = "scalar-user-fixture.invalid"
+	for _, user := range []string{"12345", testScalarBooleanUser} {
+		data := host + ":\n  user: " + user + "\n  users:\n    " + user +
+			":\n      oauth_token: dummy-scalar-user-token\n"
+		_, err := decodeHosts([]byte(data))
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, hostsFile), []byte(data), 0o600))
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		//nolint:gosec // Installed CLI, private dummy configuration, and a reserved invalid hostname.
+		cmd := exec.CommandContext(ctx, binary, "auth", "token", "--hostname", host, "--user", user)
+		cmd.Env = hostLookupEnv(os.Environ())
+		cmd.WaitDelay = 250 * time.Millisecond
+		out := &tokenOutput{}
+		err = runTokenProbe(cmd, out)
+		cancel()
+		require.NoError(t, err)
+		require.True(t, strings.TrimSpace(string(out.data)) == "dummy-scalar-user-token")
+	}
 }

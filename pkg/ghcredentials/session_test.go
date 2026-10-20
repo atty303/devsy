@@ -149,13 +149,17 @@ func TestDanglingDotfilesSymlinkKeepsPendingChanges(t *testing.T) {
 }
 
 func TestSessionPreservesTokenlessRegisteredIdentity(t *testing.T) {
+	const dotfilesUser = "dotfiles-user"
 	for _, tc := range []struct {
 		user, tokenField, userBody string
 	}{
 		{testUser, "", "{}"},
-		{"dotfiles-user", "", ""},
+		{dotfilesUser, "", ""},
+		{dotfilesUser, "", "\"\""},
+		{"12345", "", "{}"},
+		{testScalarBooleanUser, "", "{}"},
 		{testUser, "  oauth_token: \"\"\n", "\n      oauth_token: \"\""},
-		{"dotfiles-user", "  oauth_token:\n", "\n      oauth_token:"},
+		{dotfilesUser, "  oauth_token:\n", "\n      oauth_token:"},
 	} {
 		t.Run(tc.user+tc.tokenField, func(t *testing.T) {
 			root := t.TempDir()

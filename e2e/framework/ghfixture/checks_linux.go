@@ -14,7 +14,8 @@ func (c *checks) run() bool {
 	for _, phase := range []func() bool{
 		c.checkInstallation, c.checkGuestRegistrations, c.checkDispatcher, c.checkEnvfile, c.checkDispatch,
 		c.checkSelection, c.checkSelfReferences, c.checkPreferences, c.checkAuthentication, c.checkLocalAuthentication,
-		c.checkKeyring, c.checkExtensions, c.checkConcurrentUpdates, c.checkWriteback, c.checkOrphanChildren,
+		c.checkKeyring, c.checkExtensions, c.checkConcurrentUpdates, c.checkWriteback,
+		c.checkMalformedWorkingHosts, c.checkOrphanChildren,
 		c.checkAuthenticationRaces, c.checkHost, c.checkConfigLocations, c.checkRelayLoss,
 	} {
 		if !phase() {

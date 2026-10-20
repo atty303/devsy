@@ -61,7 +61,7 @@ func (c *checks) checkAuthenticationRaces() bool {
 		}
 	}
 	if !c.checkIndependentHostRace() || !c.checkIndependentKeyringRace() ||
-		!c.checkLogoutRecovery() {
+		!c.checkLogoutRecovery() || !c.checkMalformedLatestHostsRecovery() {
 		return false
 	}
 	return c.gh("", nil, "alias", "delete", authRaceAlias).code == 0

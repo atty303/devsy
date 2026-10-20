@@ -3,11 +3,14 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/devsy-org/devsy/pkg/credentials"
+	"github.com/devsy-org/devsy/pkg/log"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zapcore"
 )
 
 func TestServicePreparationWaitsForInstallAndServingWithoutEndingLifetime(t *testing.T) {
@@ -28,7 +31,7 @@ func TestServicePreparationWaitsForInstallAndServingWithoutEndingLifetime(t *tes
 			if !waitPreparationSignal(ctx, serve) {
 				return credentials.Readiness{GitHubState: credentialsUnavailable}
 			}
-			return credentials.Readiness{GitHubState: "installed"}
+			return credentials.Readiness{GitHubState: installedPreparation}
 		},
 	}
 	ready := make(chan credentials.Readiness, 1)
@@ -39,7 +42,7 @@ func TestServicePreparationWaitsForInstallAndServingWithoutEndingLifetime(t *tes
 	require.True(t, waitPreparationSignal(ctx, installDone))
 	assertPreparationPending(t, ready)
 	close(serve)
-	require.Equal(t, "installed", receivePreparation(t, ctx, ready).GitHubState)
+	require.Equal(t, installedPreparation, receivePreparation(t, ctx, ready).GitHubState)
 	assertPreparationPending(t, runDone)
 	cancel()
 	require.True(t, waitPreparationSignal(context.Background(), runDone))
@@ -136,3 +139,56 @@ const disabledPreparation = "disabled"
 const missingCLIPreparation = "missing-cli"
 
 const startupFailedPreparation = "startup-failed"
+
+func TestServicePreparationReportsFailureThroughoutServiceLifetime(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		enabled, ready, cancelled bool
+	}{
+		{name: disabledPreparation},
+		{name: "startup", enabled: true},
+		{name: "after-ready", enabled: true, ready: true},
+		{name: cancelledPreparation, enabled: true, cancelled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := log.InitTestObserved(t, zapcore.DebugLevel)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			fail := make(chan struct{})
+			runner := servicePreparation{
+				run: func() error { <-fail; return errors.New("dummy-secret-must-not-be-logged") },
+				probe: func(ctx context.Context) credentials.Readiness {
+					if tc.ready {
+						return credentials.Readiness{GitHubState: installedPreparation}
+					}
+					<-ctx.Done()
+					return credentials.Readiness{GitHubState: credentialsUnavailable}
+				},
+			}
+			if tc.cancelled {
+				cancel()
+			}
+			if !tc.ready {
+				close(fail)
+			}
+			status := runner.start(ctx, tc.enabled)
+			if tc.ready {
+				require.Equal(t, installedPreparation, status.GitHubState)
+				close(fail)
+			}
+			if tc.cancelled {
+				require.Empty(t, logs.All())
+				return
+			}
+			require.Eventually(
+				t,
+				func() bool { return logs.FilterMessage("credential services stopped unexpectedly").Len() == 1 },
+				time.Second,
+				time.Millisecond,
+			)
+			require.NotContains(t, fmt.Sprint(logs.All()), "dummy-secret")
+		})
+	}
+}
+
+const installedPreparation = "installed"
