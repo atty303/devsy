@@ -90,6 +90,15 @@ func (c *checks) checkAuthenticationRace(mode string, race authRace) bool {
 	if !c.verify(prefix+"pending command preserves exit", completed) {
 		return false
 	}
+	return c.checkAuthenticationRaceResult(prefix, race, base, p)
+}
+
+func (c *checks) checkAuthenticationRaceResult(
+	prefix string,
+	race authRace,
+	base map[string]raceHost,
+	p *pendingCommand,
+) bool {
 	if !c.verify(
 		prefix+"conflict reported",
 		strings.Contains(p.stderr.String(), "authentication_conflict"),
@@ -252,31 +261,32 @@ func localRaceToken(account Tokens) string {
 
 func (c *checks) authArtifactsClean() bool {
 	for _, root := range []string{c.original, filepath.Join(c.root, "guest-cache", "devsy", "gh-relay")} {
-		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			if err != nil || entry.IsDir() {
-				return err
-			}
-			target, resolveErr := filepath.EvalSymlinks(path)
-			if resolveErr != nil {
-				return resolveErr
-			}
-			b, readErr := readFixture(target)
-			if readErr != nil {
-				return readErr
-			}
-			for _, account := range c.accounts {
-				if strings.Contains(string(b), account.Forwarded) {
-					return os.ErrInvalid
-				}
-			}
-			return nil
-		})
-		if err != nil {
+		if filepath.WalkDir(root, c.checkAuthArtifact) != nil {
 			return false
 		}
 	}
 	return true
+}
+
+func (c *checks) checkAuthArtifact(path string, entry os.DirEntry, err error) error {
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil || entry.IsDir() {
+		return err
+	}
+	target, resolveErr := filepath.EvalSymlinks(path)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	b, readErr := readFixture(target)
+	if readErr != nil {
+		return readErr
+	}
+	for _, account := range c.accounts {
+		if strings.Contains(string(b), account.Forwarded) {
+			return os.ErrInvalid
+		}
+	}
+	return nil
 }

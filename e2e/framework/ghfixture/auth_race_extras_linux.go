@@ -27,6 +27,14 @@ func (c *checks) checkIndependentHostRace() bool {
 	}
 	base[Hosts[0]] = c.expectedAuthentication(base[Hosts[0]], refreshOperation, Hosts[0])
 	base[Hosts[2]] = c.expectedAuthentication(raceHost{}, loginOperation, Hosts[2])
+	return c.checkIndependentHostResult(prefix, p, base)
+}
+
+func (c *checks) checkIndependentHostResult(
+	prefix string,
+	p *pendingCommand,
+	base map[string]raceHost,
+) bool {
 	return c.verify(
 		prefix+"no authentication conflict",
 		!strings.Contains(p.stderr.String(), "authentication_conflict"),
@@ -72,6 +80,15 @@ func (c *checks) checkIndependentKeyringRace() bool {
 	expected.User, expected.Token = secondUser, ""
 	expected.Users[secondUser] = raceAccount{}
 	base[host] = expected
+	return c.checkIndependentKeyringResult(prefix, p, base)
+}
+
+func (c *checks) checkIndependentKeyringResult(
+	prefix string,
+	p *pendingCommand,
+	base map[string]raceHost,
+) bool {
+	host := Hosts[0]
 	token := c.originalCommand("", "auth", "token", "--hostname", host)
 	return c.verify(
 		prefix+"conflict reported",
@@ -113,6 +130,13 @@ func (c *checks) checkLogoutRecovery() bool {
 		return false
 	}
 	defer restoreFixture(c.target, config, err)
+	if !c.checkFailedLogoutWriteback(prefix) || !writeFixture(c.target, string(config)) {
+		return false
+	}
+	return c.finishLogoutRecovery(prefix, base)
+}
+
+func (c *checks) checkFailedLogoutWriteback(prefix string) bool {
 	p := c.pendingAlias(authRaceAlias)
 	defer p.stop()
 	if !c.verify(prefix+"mutation reached barrier", c.waitReady()) ||
@@ -121,14 +145,10 @@ func (c *checks) checkLogoutRecovery() bool {
 		!c.verify(prefix+"failed writeback preserves exit", p.join()) {
 		return false
 	}
-	if !c.verify(
+	return c.verify(
 		prefix+"failed writeback remains sanitized",
 		c.hasSessions() && c.authArtifactsClean(),
-	) ||
-		!writeFixture(c.target, string(config)) {
-		return false
-	}
-	return c.finishLogoutRecovery(prefix, base)
+	)
 }
 
 func (c *checks) finishLogoutRecovery(prefix string, base map[string]raceHost) bool {
