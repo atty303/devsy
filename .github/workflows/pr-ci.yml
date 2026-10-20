@@ -307,6 +307,8 @@ jobs:
           args: build --id devsy-${{ steps.os.outputs.runner_os }} --snapshot
         env:
           DEVSY_CLI_VERSION: v0.0.0
+          # Ubuntu 26.04 quotas /tmp: https://github.com/actions/runner-images/issues/14777
+          GOTMPDIR: ${{ runner.temp }}
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
