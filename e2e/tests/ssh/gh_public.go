@@ -19,6 +19,8 @@ const publicGHAPICommand = "GH_CONFIG_DIR=/tmp/public-gh HTTPS_PROXY=http://127.
 
 const publicGHUser = "host-user"
 
+const flagNoServices = "--start-services=false"
+
 // This exercises the public command with no credential-listener or wrapper
 // polling. Only the independent, dummy GitHub API starts during workspace setup.
 func testPublicGitHubCLIForwarding(ctx context.Context) {
@@ -68,10 +70,11 @@ type publicGHFixture struct {
 func (p *publicGHFixture) testUser(t ginkgo.GinkgoTInterface, ctx context.Context, user string) {
 	t.Helper()
 	workspace := t.TempDir()
+	apiDir := p.apiDirectory(t)
 	configuration := map[string]any{
 		"image":      p.fixture.name + ":test",
 		"remoteUser": user,
-		"mounts":     []string{"type=bind,source=" + p.dir + ",target=/fixture"},
+		"mounts":     []string{"type=bind,source=" + apiDir + ",target=/fixture"},
 		"postCreateCommand": `sudo -n sh -c 'nohup /opt/ghfixture server-public >/tmp/fixture-api.log 2>&1 </dev/null &'
 for i in $(seq 1 50); do test -f /fixture/api-ready && exit 0; sleep .1; done
 exit 1`,
@@ -79,12 +82,6 @@ exit 1`,
 	data, err := json.Marshal(configuration)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, ".devcontainer.json"), data, 0o600))
-	// The public fixture certificate and generated accounts are consumed by a
-	// different guest UID. The host authentication directory remains private.
-	// #nosec G302 -- Only generated fixture resources are shared with the guest UID.
-	require.NoError(t, os.Chmod(p.dir, 0o755))
-	// #nosec G302 -- The generated dummy API accounts must be readable by the guest UID.
-	require.NoError(t, os.Chmod(filepath.Join(p.dir, "accounts.json"), 0o644))
 	deleted := false
 	t.Cleanup(func() {
 		if deleted {
@@ -95,10 +92,11 @@ exit 1`,
 		_ = p.f.DevsyWorkspaceDelete(cleanup, workspace)
 	})
 	require.NoError(t, p.f.DevsyUp(ctx, workspace))
+	p.registerDiagnostics(t, workspace, &deleted)
 	// No services start during this check, leaving the first enabled SSH call
 	// responsible for both preparing the relay and running the first gh command.
 	_, _, err = p.f.ExecCommandCapture(ctx, []string{
-		cmdWorkspace, cmdSSH, workspace, "--start-services=false", flagCommand,
+		cmdWorkspace, cmdSSH, workspace, flagNoServices, flagCommand,
 		"test ! -e /usr/local/bin/gh.devsy-original",
 	})
 	require.NoError(t, err)
@@ -116,8 +114,23 @@ exit 1`,
 	p.testMissingCLI(t, ctx, workspace)
 	require.NoError(t, p.f.DevsyWorkspaceDelete(ctx, workspace))
 	deleted = true
-	// The next guest must start without a stale API readiness file.
-	require.NoError(t, os.Remove(filepath.Join(p.dir, "api-ready")))
+}
+
+func (p *publicGHFixture) apiDirectory(t ginkgo.GinkgoTInterface) string {
+	t.Helper()
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	accounts, err := os.ReadFile(filepath.Join(p.dir, "accounts.json"))
+	require.NoError(t, err)
+	path := filepath.Join(dir, "accounts.json")
+	require.NoError(t, root.WriteFile("accounts.json", accounts, 0o600))
+	// #nosec G302 -- Only generated fixture resources are shared with the guest UID.
+	require.NoError(t, os.Chmod(dir, 0o755))
+	// #nosec G302 -- The generated dummy API accounts must be readable by the guest UID.
+	require.NoError(t, os.Chmod(path, 0o644))
+	return dir
 }
 
 func (p *publicGHFixture) testMissingCLI(
@@ -128,7 +141,7 @@ func (p *publicGHFixture) testMissingCLI(
 	t.Helper()
 	_, _, err := p.f.ExecCommandCapture(ctx, []string{
 		cmdWorkspace, cmdSSH, workspace,
-		"--start-services=false", flagCommand,
+		flagNoServices, flagCommand,
 		"sudo -n rm -f /usr/local/bin/gh /usr/local/bin/gh.devsy-original /usr/bin/gh",
 	})
 	require.NoError(t, err)

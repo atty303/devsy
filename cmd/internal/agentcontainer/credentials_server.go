@@ -102,7 +102,7 @@ func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	ln, err := claimPort(port)
+	ln, err := cmd.claimPort(ctx, port)
 	if err != nil {
 		if errors.Is(err, errPortOwnedByAnotherSession) {
 			cmd.logPortOwnedByAnotherSession(ctx, port)

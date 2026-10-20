@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -415,9 +416,11 @@ func readFixture(path string) ([]byte, error) {
 func serveFixture(ctx context.Context, root string, accounts Accounts, certificatePath string) int {
 	server, err := StartAPI(root, certificatePath, "127.0.0.1:8123", accounts)
 	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "fixture API startup failed: %v\n", err)
 		return 1
 	}
-	if os.WriteFile(filepath.Join(root, "api-ready"), nil, 0o600) != nil {
+	if err := os.WriteFile(filepath.Join(root, "api-ready"), nil, 0o600); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "fixture API readiness publication failed: %v\n", err)
 		return 1
 	}
 	<-ctx.Done()

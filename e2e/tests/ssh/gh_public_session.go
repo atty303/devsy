@@ -29,7 +29,8 @@ func (p *publicGHFixture) testLiveServiceReuse(
 	cmd.WaitDelay = 250 * time.Millisecond
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
-	cmd.Stderr = io.Discard
+	var stderr publicSessionStderr
+	cmd.Stderr = &stderr
 	require.NoError(t, cmd.Start())
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
@@ -45,14 +46,14 @@ func (p *publicGHFixture) testLiveServiceReuse(
 	}()
 	select {
 	case line := <-first:
-		require.Equal(
-			t,
-			publicGHUser,
-			line,
-			"first public command must authenticate without a setup wait",
-		)
+		if line != publicGHUser {
+			stop()
+			require.Equal(t, publicGHUser, line,
+				"first public command must authenticate without a setup wait: %s", stderr.String())
+		}
 	case <-time.After(20 * time.Second):
-		t.Fatal("first public GitHub command did not complete")
+		stop()
+		t.Fatalf("first public GitHub command did not complete: %s", stderr.String())
 	}
 	out, err := p.f.DevsySSHOnce(ctx, workspace, publicGHAPICommand)
 	require.NoError(t, err, "second connection must reuse the still-live owner")
