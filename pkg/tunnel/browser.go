@@ -97,8 +97,8 @@ func runBrowserTunnelServices(
 	p BrowserTunnelParams,
 	containerClient *ssh.Client,
 ) error {
-	return runPreparedBrowserServices(ctx, p, func() credentials.Readiness {
-		return StartPreparedServices(
+	return runPreparedBrowserServices(ctx, p, func(prepared func(credentials.Readiness)) error {
+		return RunPreparedServices(
 			ctx,
 			RunServicesOptions{
 				DevsyConfig:     p.DevsyConfig,
@@ -123,6 +123,7 @@ func runBrowserTunnelServices(
 				ExtraListeners:     p.ExtraListeners,
 				DisableIdleTimeout: p.DisableIdleTimeout,
 			},
+			prepared,
 		)
 	})
 }
@@ -130,13 +131,12 @@ func runBrowserTunnelServices(
 func runPreparedBrowserServices(
 	ctx context.Context,
 	p BrowserTunnelParams,
-	prepare func() credentials.Readiness,
+	run func(func(credentials.Readiness)) error,
 ) error {
-	status := prepare()
-	log.Debugw("browser credentials prepared", "status", status.GitHubState)
-	notifyBrowserPrepared(ctx, p)
-	<-ctx.Done()
-	return nil
+	return run(func(status credentials.Readiness) {
+		log.Debugw("browser credentials prepared", "status", status.GitHubState)
+		notifyBrowserPrepared(ctx, p)
+	})
 }
 
 func notifyBrowserPrepared(ctx context.Context, p BrowserTunnelParams) {

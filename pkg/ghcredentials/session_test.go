@@ -63,6 +63,112 @@ func TestSessionConcurrentInvocationsAndRecovery(t *testing.T) {
 	require.NoError(t, c.finish(context.Background()))
 }
 
+func TestSessionDirectoryAliasesShareWritebackLock(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	t.Setenv("HOME", root)
+	original, alias := filepath.Join(root, "gh"), filepath.Join(root, "alias")
+	writeTestFile(t, filepath.Join(original, configFile), "editor: vi\npager: less\n")
+	require.NoError(t, os.Symlink(original, alias))
+	a, err := startSession(context.Background(), original, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = a.lock.Close() })
+	b, err := startSession(context.Background(), alias, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = b.lock.Close() })
+	writeTestFile(t, filepath.Join(a.work(), configFile), "editor: nano\npager: less\n")
+	writeTestFile(t, filepath.Join(b.work(), configFile), "editor: vi\npager: cat\n")
+	planned, release := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	a.checkpoint = func(stage string) error {
+		if stage == "planned:"+configFile {
+			close(planned)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	// The short-lived context makes B prove it contends before A publishes.
+	aDone := make(chan error, 1)
+	go func() { aDone <- a.sync(ctx) }()
+	select {
+	case <-planned:
+	case <-ctx.Done():
+		t.Fatal("first writeback did not reach its publication barrier")
+	}
+	bCtx, bCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer bCancel()
+	err = b.sync(bCtx)
+	close(release)
+	require.ErrorIs(t, err, context.DeadlineExceeded, "alias bypassed the configuration lock")
+	require.NoError(t, <-aDone)
+	require.NoError(t, b.sync(context.Background()))
+	assertMergedPreferences(t, original)
+}
+
+func assertMergedPreferences(t *testing.T, original string) {
+	t.Helper()
+	data, err := readFile(filepath.Join(original, configFile))
+	require.NoError(t, err)
+	n, err := decode(data)
+	require.NoError(t, err)
+	require.Equal(t, "nano", get(n, "editor").Value)
+	require.Equal(t, "cat", get(n, "pager").Value)
+}
+
+func TestSessionRejectsRetargetedConfigurationDirectory(t *testing.T) {
+	for _, stage := range []string{"before writeback", "planned:" + configFile} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", root)
+			t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+			one := filepath.Join(root, "one")
+			two := filepath.Join(root, "two")
+			alias := filepath.Join(root, "alias")
+			writeTestFile(t, filepath.Join(one, configFile), "editor: vi\n")
+			writeTestFile(t, filepath.Join(two, configFile), "editor: vi\n")
+			require.NoError(t, os.Symlink(one, alias))
+			s, err := startSession(context.Background(), alias, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.lock.Close() })
+			writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\n")
+			retarget := func() {
+				require.NoError(t, os.Remove(alias))
+				require.NoError(t, os.Symlink(two, alias))
+			}
+			if stage == "before writeback" {
+				retarget()
+			} else {
+				s.checkpoint = func(at string) error {
+					if at == stage {
+						retarget()
+					}
+					return nil
+				}
+			}
+			require.Error(t, s.finish(context.Background()))
+			assertNoForwardedArtifacts(t, s.dir)
+			for _, dir := range []string{one, two} {
+				data, err := readFile(filepath.Join(dir, configFile))
+				require.NoError(t, err)
+				require.Equal(t, "editor: vi\n", string(data))
+			}
+			require.NoError(t, os.Remove(alias))
+			require.NoError(t, os.Symlink(one, alias))
+			err = recoverSession(context.Background(), s.dir)
+			if err != nil {
+				require.ErrorIs(t, err, errAuthConflict)
+			}
+			assertNoForwardedArtifacts(t, filepath.Dir(s.dir))
+		})
+	}
+}
+
 func TestStripForwardedCredentialsAndPreserveLocalLogin(t *testing.T) {
 	a := Account{Host: testHost, User: testUser, Token: testForwardedToken}
 	s := &session{Accounts: []Account{a}}

@@ -52,6 +52,21 @@ func StartPreparedServicesDaemon(
 	return tunnel.StartPreparedServices(ctx, services)
 }
 
+func RunPreparedServicesDaemon(
+	ctx context.Context,
+	opts StartServicesDaemonOptions,
+	prepared func(credentials.Readiness),
+) error {
+	services, err := daemonServiceOptions(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if opts.User == "" {
+		return nil
+	}
+	return tunnel.RunPreparedServices(ctx, services, prepared)
+}
+
 func daemonServiceOptions(
 	ctx context.Context,
 	opts StartServicesDaemonOptions,

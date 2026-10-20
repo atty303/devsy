@@ -21,16 +21,17 @@ import (
 )
 
 type session struct {
-	Version      int              `json:"version"`
-	Original     string           `json:"original"`
-	Overlays     []overlayAccount `json:"overlays,omitempty"`
-	Sanitized    bool             `json:"sanitized"`
-	LostHosts    bool             `json:"lost_hosts,omitempty"`
-	Publications []publication    `json:"publications,omitempty"`
-	Accounts     []Account        `json:"-"`
-	dir          string
-	lock         *ownerLock
-	checkpoint   func(string) error
+	Version        int              `json:"version"`
+	Original       string           `json:"original"`
+	OriginalTarget string           `json:"original_target,omitempty"`
+	Overlays       []overlayAccount `json:"overlays,omitempty"`
+	Sanitized      bool             `json:"sanitized"`
+	LostHosts      bool             `json:"lost_hosts,omitempty"`
+	Publications   []publication    `json:"publications,omitempty"`
+	Accounts       []Account        `json:"-"`
+	dir            string
+	lock           *ownerLock
+	checkpoint     func(string) error
 }
 
 func sessionRoot() (string, error) {
@@ -72,6 +73,10 @@ func startSession(ctx context.Context, original string, accounts []Account) (*se
 }
 
 func newSession(ctx context.Context, root, original string, accounts []Account) (*session, error) {
+	target, err := resolveOriginal(original)
+	if err != nil {
+		return nil, boundary("snapshot.target", err)
+	}
 	dir, err := os.MkdirTemp(root, "session-")
 	if err != nil {
 		return nil, err
@@ -81,7 +86,14 @@ func newSession(ctx context.Context, root, original string, accounts []Account) 
 		_ = os.RemoveAll(dir)
 		return nil, boundary("session.owner_lock", err)
 	}
-	s := &session{Version: 2, Original: original, Accounts: accounts, dir: dir, lock: owner}
+	s := &session{
+		Version:        2,
+		Original:       original,
+		OriginalTarget: target,
+		Accounts:       accounts,
+		dir:            dir,
+		lock:           owner,
+	}
 	ready := false
 	defer func() {
 		if !ready {
@@ -89,7 +101,7 @@ func newSession(ctx context.Context, root, original string, accounts []Account) 
 			_ = os.RemoveAll(dir)
 		}
 	}()
-	if err := copyTree(ctx, original, filepath.Join(dir, "before"), 0); err != nil {
+	if err := copyTree(ctx, target, filepath.Join(dir, "before"), 0); err != nil {
 		return nil, boundary("snapshot.read", err)
 	}
 	if err := copyTree(ctx, filepath.Join(dir, "before"), s.work(), 0); err != nil {
@@ -281,7 +293,7 @@ func (s *session) upgrade(b []byte) error {
 }
 
 func (s *session) validate() error {
-	if !filepath.IsAbs(s.Original) || s.Version != 2 {
+	if !s.validLocation() || s.Version != 2 {
 		return errInvalidConfig
 	}
 	seen := map[string]bool{}
@@ -297,6 +309,11 @@ func (s *session) validate() error {
 		}
 	}
 	return nil
+}
+
+func (s *session) validLocation() bool {
+	return filepath.IsAbs(s.Original) &&
+		(s.OriginalTarget == "" || filepath.IsAbs(s.OriginalTarget))
 }
 
 func (s *session) save() error {
@@ -460,12 +477,19 @@ func (s *session) sync(ctx context.Context) error {
 		return err
 	}
 	root := filepath.Dir(s.dir)
-	key := sha256.Sum256([]byte(s.Original))
+	target, err := s.bindOriginal()
+	if err != nil {
+		return err
+	}
+	key := sha256.Sum256([]byte(target))
 	l, err := lock(ctx, filepath.Join(root, fmt.Sprintf("config-%x.lock", key[:16])))
 	if err != nil {
 		return boundary("config.lock", err)
 	}
 	defer func() { _ = l.Close() }()
+	if _, err := s.originalPath(""); err != nil {
+		return err
+	}
 	ordered, err := s.changedNames()
 	if err != nil {
 		return err
@@ -478,6 +502,42 @@ func (s *session) sync(ctx context.Context) error {
 		syncErr = errors.Join(syncErr, s.syncFile(name))
 	}
 	return syncErr
+}
+
+func (s *session) bindOriginal() (string, error) {
+	target, err := resolveOriginal(s.Original)
+	if err != nil {
+		return "", boundary("config.target", err)
+	}
+	if s.OriginalTarget == "" {
+		s.OriginalTarget = target
+		if err := s.save(); err != nil {
+			s.OriginalTarget = ""
+			return "", boundary("config.target_checkpoint", err)
+		}
+	}
+	if target != s.OriginalTarget {
+		return "", errors.New("GitHub CLI configuration directory changed")
+	}
+	return target, nil
+}
+
+func (s *session) originalPath(name string) (string, error) {
+	target, err := s.bindOriginal()
+	if err != nil {
+		return "", err
+	}
+	path, err := resolveOriginal(filepath.Join(target, name))
+	return path, boundary("config.target", err)
+}
+
+func (s *session) readOriginal(name string) ([]byte, error) {
+	path, err := s.originalPath(name)
+	if err != nil {
+		return nil, err
+	}
+	data, err := readFile(path)
+	return data, boundary("config.latest_read", err)
 }
 
 func (s *session) changedNames() ([]string, error) {
@@ -694,10 +754,9 @@ func (s *session) syncFile(name string) error {
 	if bytes.Equal(before, after) {
 		return nil
 	}
-	path := filepath.Join(s.Original, name)
-	latest, err := readFile(path)
+	latest, err := s.readOriginal(name)
 	if err != nil {
-		return boundary("config.latest_read", err)
+		return err
 	}
 	after, err = s.mergeFile(name, before, after, latest)
 	if err != nil && !errors.Is(err, errAuthConflict) {

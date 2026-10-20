@@ -38,9 +38,14 @@ func (c *checks) checkConcurrentUpdates() bool {
 }
 
 func (c *checks) checkParallelConfigMutation(p *pendingCommand) bool {
+	alias := filepath.Join(c.root, "config-directory-alias")
+	if !c.verify("configuration directory alias prepared", os.Symlink(c.original, alias) == nil) {
+		return false
+	}
+	defer func() { _ = os.Remove(alias) }()
 	if !c.verify(
 		"parallel gh saves unrelated pager",
-		c.gh("", nil, "config", "set", "pager", "less").code == 0,
+		c.gh("", map[string]string{envGHConfig: alias}, "config", "set", "pager", "less").code == 0,
 	) {
 		return false
 	}
@@ -55,6 +60,13 @@ func (c *checks) checkParallelConfigMutation(p *pendingCommand) bool {
 		return false
 	}
 	completed := p.join()
+	if !c.verify("directory aliases observe both concurrent preferences", completed &&
+		c.setting("editor") == pendingEditor &&
+		strings.TrimSpace(
+			c.gh("", map[string]string{envGHConfig: alias}, "config", "get", "pager").stdout,
+		) == "less") {
+		return false
+	}
 	return c.checkParallelConfigResult(completed)
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"time"
@@ -24,12 +25,23 @@ func hostCredentialOwner() string {
 }
 
 func StartPreparedServices(ctx context.Context, opts RunServicesOptions) credentials.Readiness {
+	return prepareServices(ctx, opts).start(ctx, opts.ConfigureGitHubCredentials)
+}
+
+func RunPreparedServices(
+	ctx context.Context,
+	opts RunServicesOptions,
+	prepared func(credentials.Readiness),
+) error {
+	return prepareServices(ctx, opts).runPrepared(ctx, opts.ConfigureGitHubCredentials, prepared)
+}
+
+func prepareServices(ctx context.Context, opts RunServicesOptions) servicePreparation {
 	opts.HostOwner = hostCredentialOwner()
-	runner := servicePreparation{
+	return servicePreparation{
 		run:   func() error { return RunServices(ctx, opts) },
 		probe: func(ctx context.Context) credentials.Readiness { return probePreparedServices(ctx, opts) },
 	}
-	return runner.start(ctx, opts.ConfigureGitHubCredentials)
 }
 
 type servicePreparation struct {
@@ -38,35 +50,83 @@ type servicePreparation struct {
 }
 
 func (p servicePreparation) start(ctx context.Context, enabled bool) credentials.Readiness {
-	done := make(chan error, 1)
+	status, _ := p.startWithLifetime(ctx, enabled)
+	return status
+}
+
+type serviceCompletion struct {
+	done chan struct{}
+	err  error
+}
+
+func (p servicePreparation) startWithLifetime(
+	ctx context.Context,
+	enabled bool,
+) (credentials.Readiness, *serviceCompletion) {
+	completion := &serviceCompletion{done: make(chan struct{})}
 	go func() {
-		err := p.run()
-		if err != nil && ctx.Err() == nil {
+		completion.err = p.run()
+		if completion.err != nil && ctx.Err() == nil {
 			log.Debug("credential services stopped unexpectedly")
 		}
-		done <- err
+		close(completion.done)
 	}()
 	if !enabled {
-		return credentials.Readiness{GitHubState: "disabled"}
+		return credentials.Readiness{GitHubState: "disabled"}, completion
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	ready := make(chan credentials.Readiness, 1)
 	go func() { ready <- p.probe(probeCtx) }()
-	return p.await(probeCtx, done, ready)
+	return p.await(probeCtx, completion, ready), completion
+}
+
+func (p servicePreparation) runPrepared(
+	ctx context.Context,
+	enabled bool,
+	prepared func(credentials.Readiness),
+) error {
+	status, completion := p.startWithLifetime(ctx, enabled)
+	select {
+	case <-completion.done:
+		if completion.err != nil {
+			return completion.result(ctx)
+		}
+	default:
+	}
+	if ctx.Err() == nil {
+		prepared(status)
+	}
+	select {
+	case <-completion.done:
+		if err := completion.result(ctx); err != nil {
+			return err
+		}
+		<-ctx.Done()
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+func (c *serviceCompletion) result(ctx context.Context) error {
+	if c.err != nil && ctx.Err() == nil {
+		return errors.New("credential services stopped unexpectedly")
+	}
+	return nil
 }
 
 func (p servicePreparation) await(
 	ctx context.Context,
-	done <-chan error,
+	completion *serviceCompletion,
 	ready <-chan credentials.Readiness,
 ) credentials.Readiness {
+	done := completion.done
 	for {
 		select {
 		case status := <-ready:
 			return status
-		case err := <-done:
-			if err != nil {
+		case <-done:
+			if completion.err != nil {
 				return credentials.Readiness{GitHubState: credentialsUnavailable}
 			}
 			done = nil

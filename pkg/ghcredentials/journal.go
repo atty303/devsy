@@ -116,9 +116,9 @@ func (s *session) checkpointAt(stage string) error {
 }
 
 func (s *session) planPublication(name string, latest, result []byte, conflict bool) error {
-	target, err := resolveOriginal(filepath.Join(s.Original, name))
+	target, err := s.originalPath(name)
 	if err != nil {
-		return boundary("config.target", err)
+		return err
 	}
 	mode := fs.FileMode(0o600)
 	if info, statErr := os.Stat(
@@ -166,9 +166,9 @@ func (s *session) publish(p *publication) error {
 }
 
 func (s *session) applyPublication(p *publication) error {
-	target, err := resolveOriginal(filepath.Join(s.Original, p.Name))
+	target, err := s.originalPath(p.Name)
 	if err != nil {
-		return boundary("config.target", err)
+		return err
 	}
 	current, err := readFile(target)
 	if err != nil {
@@ -196,6 +196,13 @@ func (s *session) writePublication(p *publication) error {
 	}
 	if err := s.checkpointAt("publishing:" + p.Name); err != nil {
 		return err
+	}
+	target, err := s.originalPath(p.Name)
+	if err != nil {
+		return err
+	}
+	if target != p.Target {
+		return errAuthConflict
 	}
 	if err := writePublication(p); err != nil {
 		p.Publishing = false

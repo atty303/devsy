@@ -230,6 +230,8 @@ var ExpectedChecks = []string{
 	"concurrent alias saves",
 	"concurrent invocation reached user mutation",
 	"parallel gh saves unrelated pager",
+	"configuration directory alias prepared",
+	"directory aliases observe both concurrent preferences",
 	"parallel and dotfiles changes survive",
 	"prepare interrupted mutation",
 	"interrupted invocation reached mutation",

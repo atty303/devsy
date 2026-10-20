@@ -143,7 +143,17 @@ func TestJournalMalformedWorkIsDiscardedWithoutRetainingForwardedToken(t *testin
 	require.NoFileExists(t, filepath.Join(s.Original, hostsFile))
 }
 
+const duringPublishingStage = "during-publishing"
+
 func TestJournalBindsPublicationToSymlinkTarget(t *testing.T) {
+	for _, stage := range []string{"planned:", "publishing:", duringPublishingStage} {
+		t.Run(stage, func(t *testing.T) {
+			testJournalBindsPublicationToSymlinkTarget(t, stage)
+		})
+	}
+}
+
+func testJournalBindsPublicationToSymlinkTarget(t *testing.T, stagePrefix string) {
 	s := journalSession(t)
 	one, two := filepath.Join(s.Original, "one"), filepath.Join(s.Original, "two")
 	writeTestFile(t, one, "editor: vi\n")
@@ -152,15 +162,24 @@ func TestJournalBindsPublicationToSymlinkTarget(t *testing.T) {
 	require.NoError(t, os.Remove(path))
 	require.NoError(t, os.Symlink(one, path))
 	writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\n")
+	retarget := func() {
+		require.NoError(t, os.Remove(path))
+		require.NoError(t, os.Symlink(two, path))
+	}
 	s.checkpoint = func(stage string) error {
-		if stage == "planned:config.yml" {
+		if stagePrefix == duringPublishingStage && stage == "publishing:"+configFile {
+			retarget()
+			return nil
+		}
+		if stage == stagePrefix+configFile {
 			return errors.New("injected")
 		}
 		return nil
 	}
 	require.Error(t, s.finish(context.Background()))
-	require.NoError(t, os.Remove(path))
-	require.NoError(t, os.Symlink(two, path))
+	if stagePrefix != duringPublishingStage {
+		retarget()
+	}
 	require.ErrorIs(t, recoverSession(context.Background(), s.dir), errAuthConflict)
 	b, err := readFile(two)
 	require.NoError(t, err)
