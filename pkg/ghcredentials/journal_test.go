@@ -143,6 +143,47 @@ func TestJournalMalformedWorkIsDiscardedWithoutRetainingForwardedToken(t *testin
 	require.NoFileExists(t, filepath.Join(s.Original, hostsFile))
 }
 
+func TestJournalPreservesEditsDuringPublishingCheckpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "login", data: []byte(authFixture("new-user", "dummy-new-login"))},
+		{name: "logout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := journalSession(t)
+			baseline := authFixture("before-user", "dummy-before-login")
+			writeTestFile(t, filepath.Join(s.dir, "before", hostsFile), baseline)
+			writeTestFile(t, filepath.Join(s.Original, hostsFile), baseline)
+			writeTestFile(
+				t,
+				filepath.Join(s.work(), hostsFile),
+				authFixture("local-user", "dummy-local-login"),
+			)
+			path := filepath.Join(s.Original, hostsFile)
+			s.checkpoint = func(stage string) error {
+				if stage == "publishing:"+hostsFile {
+					if tc.data == nil {
+						return removeFile(path)
+					}
+					return os.WriteFile(path, tc.data, 0o600)
+				}
+				return nil
+			}
+			require.ErrorIs(t, s.finish(context.Background()), errAuthConflict)
+			got, err := readFile(path)
+			require.NoError(t, err)
+			require.True(t, bytes.Equal(got, tc.data), "concurrent authentication edit overwritten")
+			require.NoError(t, recoverSession(context.Background(), s.dir))
+			got, err = readFile(path)
+			require.NoError(t, err)
+			require.True(t, bytes.Equal(got, tc.data), "recovery replayed earlier authentication")
+			assertNoForwardedArtifacts(t, s.dir)
+		})
+	}
+}
+
 const duringPublishingStage = "during-publishing"
 
 func TestJournalBindsPublicationToSymlinkTarget(t *testing.T) {

@@ -197,12 +197,9 @@ func (s *session) writePublication(p *publication) error {
 	if err := s.checkpointAt("publishing:" + p.Name); err != nil {
 		return err
 	}
-	target, err := s.originalPath(p.Name)
-	if err != nil {
+	needsWrite, err := s.publicationNeedsWrite(p)
+	if err != nil || !needsWrite {
 		return err
-	}
-	if target != p.Target {
-		return errAuthConflict
 	}
 	if err := writePublication(p); err != nil {
 		p.Publishing = false
@@ -218,6 +215,29 @@ func (s *session) writePublication(p *publication) error {
 		return err
 	}
 	return nil
+}
+
+func (s *session) publicationNeedsWrite(p *publication) (bool, error) {
+	target, err := s.originalPath(p.Name)
+	if err != nil {
+		return false, err
+	}
+	if target != p.Target {
+		return false, errAuthConflict
+	}
+	current, err := readFile(target)
+	if err != nil {
+		return false, boundary("config.latest_read", err)
+	}
+	switch imageDigest(current) {
+	case p.Postimage:
+		return false, nil
+	case p.Preimage:
+		return true, nil
+	default:
+		p.Conflict = true
+		return false, nil
+	}
 }
 
 func (s *session) markApplied(p *publication) error {
@@ -239,7 +259,7 @@ func writePublication(p *publication) error {
 	if p.Result == nil {
 		return removeFile(p.Target)
 	}
-	return writeOriginal(p.Target, p.Result, p.Mode)
+	return writeResolvedOriginal(p.Target, p.Result, p.Mode)
 }
 
 func validPublication(p *publication) bool {

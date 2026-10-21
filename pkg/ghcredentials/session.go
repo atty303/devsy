@@ -574,6 +574,10 @@ func writeOriginal(path string, data []byte, mode fs.FileMode) error {
 	if err != nil {
 		return err
 	}
+	return writeResolvedOriginal(path, data, mode)
+}
+
+func writeResolvedOriginal(path string, data []byte, mode fs.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
