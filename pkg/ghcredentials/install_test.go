@@ -7,12 +7,96 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestBackendDiscoveryToleratesLoginShellOutput(t *testing.T) {
+	const availableResult = `{"status":"available"}`
+	const missingResult = `{"status":"backend_missing"}`
+	for _, tc := range []struct {
+		name, profile, output, exit, want string
+		invalid                           bool
+	}{
+		{name: "plain response", output: availableResult, want: stateAvailable},
+		{name: "login banner", profile: "Welcome to the workspace\n", output: availableResult, want: stateAvailable},
+		{
+			name: "banner without newline", profile: "Activating user environment",
+			output: availableResult, want: stateAvailable,
+		},
+		{
+			name: "backend missing", profile: "User profile loaded\n",
+			output: missingResult + "\n\n", want: "backend_missing",
+		},
+		{name: "JSON in profile", profile: availableResult + "\n", output: missingResult, want: "backend_missing"},
+		{name: "malformed response", profile: "Welcome\n", output: "not JSON", invalid: true},
+		{name: "empty response", profile: "Welcome\n", invalid: true},
+		{
+			name: "malformed response after JSON profile", profile: availableResult + "\n",
+			output: "invalid", invalid: true,
+		},
+		{name: "failed command", output: availableResult, exit: "17", invalid: true},
+		{
+			name: "oversized banner", profile: strings.Repeat("x", maxTokenOutput+1),
+			output: availableResult, invalid: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binary, record := loginShellFixture(t)
+			t.Setenv("DEVSY_TEST_PROFILE_OUTPUT", tc.profile)
+			t.Setenv("DEVSY_TEST_BACKEND_OUTPUT", tc.output)
+			t.Setenv("DEVSY_TEST_BACKEND_EXIT", tc.exit)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result, err := discoverWithLoginShell(ctx, binary, "guest-user")
+			if tc.invalid {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.want, result.Status)
+			}
+			args, err := readHelperFile(record)
+			require.NoError(t, err)
+			require.True(t, strings.HasPrefix(string(args), "-\nguest-user\n-c\n"))
+		})
+	}
+}
+
+func loginShellFixture(t *testing.T) (binary, record string) {
+	t.Helper()
+	dir := t.TempDir()
+	record = filepath.Join(dir, "su-args")
+	writeTestExecutable(t, filepath.Join(dir, "su"), []byte(`#!/bin/sh
+printf '%s\n' "$@" > "$DEVSY_TEST_SU_ARGS"
+printf '%s' "$DEVSY_TEST_PROFILE_OUTPUT"
+exec /bin/sh -c "$4"
+`))
+	binary = filepath.Join(dir, "agent's binary")
+	writeTestExecutable(t, binary, []byte(`#!/bin/sh
+test "$#" = 2 && test "$1" = internal && test "$2" = gh-backend || exit 42
+printf '%s\n' "$DEVSY_TEST_BACKEND_OUTPUT"
+exit "${DEVSY_TEST_BACKEND_EXIT:-0}"
+`))
+	t.Setenv("PATH", dir)
+	t.Setenv("DEVSY_TEST_SU_ARGS", record)
+	return binary, record
+}
+
+func TestBackendDiscoveryLoginShellCancellationIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	writeTestExecutable(t, filepath.Join(dir, "su"), []byte("#!/bin/sh\nexec /bin/sleep 10\n"))
+	t.Setenv("PATH", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := discoverWithLoginShell(ctx, "/unused-agent", "guest-user")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(started), time.Second)
+}
 
 func TestInstallWithSudoPreservesArgumentsAndFailure(t *testing.T) {
 	dir := t.TempDir()

@@ -1,6 +1,7 @@
 package ghcredentials
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -100,6 +101,11 @@ func discoverForUser(ctx context.Context, binary, targetUser string) (InstallRes
 	if os.Geteuid() != 0 {
 		return InstallResult{}, errors.New("GitHub CLI target user differs from service user")
 	}
+	return discoverWithLoginShell(ctx, binary, targetUser)
+}
+
+func discoverWithLoginShell(ctx context.Context, binary, targetUser string) (InstallResult, error) {
+	// Separate the response even when the login profile prints without a newline.
 	//nolint:gosec // su drops to the requested guest user before reading their login environment.
 	cmd := exec.CommandContext(
 		ctx,
@@ -107,7 +113,7 @@ func discoverForUser(ctx context.Context, binary, targetUser string) (InstallRes
 		"-",
 		targetUser,
 		"-c",
-		shellescape.Quote(binary)+" internal gh-backend",
+		"printf '\\n'; exec "+shellescape.Quote(binary)+" internal gh-backend",
 	)
 	cmd.WaitDelay = 250 * time.Millisecond
 	out := &tokenOutput{}
@@ -117,8 +123,10 @@ func discoverForUser(ctx context.Context, binary, targetUser string) (InstallRes
 		}
 		return InstallResult{}, err
 	}
+	response := bytes.TrimSpace(out.data)
+	response = response[bytes.LastIndexByte(response, '\n')+1:]
 	var result InstallResult
-	if out.overflow || json.Unmarshal(out.data, &result) != nil {
+	if out.overflow || json.Unmarshal(response, &result) != nil {
 		return InstallResult{}, errInvalidConfig
 	}
 	return result, nil

@@ -3,6 +3,7 @@
 package ghcredentials
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -36,6 +37,54 @@ func TestSessionMergePreservesDotfilesAndConcurrentChanges(t *testing.T) {
 	require.Equal(t, "nano", get(n, "editor").Value)
 	require.Equal(t, "cat", get(n, "pager").Value)
 	require.Equal(t, "disabled", get(n, "prompt").Value)
+}
+
+func TestSessionSnapshotIgnoresDanglingSymlinks(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	original := filepath.Join(root, "gh")
+	writeTestFile(t, filepath.Join(original, configFile), "editor: vi\n")
+	for _, name := range []string{"unused.yml", filepath.Join("extensions", "unused")} {
+		path := filepath.Join(original, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		require.NoError(t, os.Symlink("missing-target", path))
+	}
+	s, err := startSession(context.Background(), original, []Account{
+		{Host: testHost, User: testUser, Token: testForwardedToken},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.lock.Close() })
+	env := []string{"HOME=" + root, "GH_CONFIG_DIR=" + original, testPathEnv}
+	require.NoError(t, s.inject(context.Background(), "/usr/bin/false", env))
+	data, err := readFile(filepath.Join(s.work(), hostsFile))
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(data, []byte(testForwardedToken)), "forwarding was not prepared")
+	writeTestFile(t, filepath.Join(s.work(), configFile), "editor: nano\n")
+	require.NoError(t, s.finish(context.Background()))
+	data, err = readFile(filepath.Join(original, configFile))
+	require.NoError(t, err)
+	require.Equal(t, "editor: nano\n", string(data))
+	for _, name := range []string{"unused.yml", filepath.Join("extensions", "unused")} {
+		target, err := os.Readlink(filepath.Join(original, name))
+		require.NoError(t, err)
+		require.Equal(t, "missing-target", target)
+	}
+	data, err = readFile(filepath.Join(original, hostsFile))
+	require.NoError(t, err)
+	require.False(
+		t,
+		bytes.Contains(data, []byte(testForwardedToken)),
+		"forwarded credentials were published",
+	)
+	assertNoForwardedArtifacts(t, filepath.Join(root, "cache"))
+}
+
+func TestSessionSnapshotStillRejectsSymlinkCycles(t *testing.T) {
+	root := t.TempDir()
+	link := filepath.Join(root, "cycle")
+	require.NoError(t, os.Symlink("cycle", link))
+	require.Error(t, copyTree(context.Background(), root, t.TempDir(), 0))
 }
 
 func TestSessionConcurrentInvocationsAndRecovery(t *testing.T) {

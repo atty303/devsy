@@ -163,6 +163,9 @@ func (s *treeSnapshot) copyEntry(src, dst string, depth int) error {
 		return errors.New("GitHub CLI configuration has too many entries")
 	}
 	info, err := os.Stat(src) // Follow symlinks into a private copy, never a link to the original.
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -172,6 +175,10 @@ func (s *treeSnapshot) copyEntry(src, dst string, depth int) error {
 	if !info.Mode().IsRegular() {
 		return nil
 	}
+	return s.copyFile(src, dst, info)
+}
+
+func (s *treeSnapshot) copyFile(src, dst string, info fs.FileInfo) error {
 	if err := s.reserveBytes(info.Size()); err != nil {
 		return err
 	}
