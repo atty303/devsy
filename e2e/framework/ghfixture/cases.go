@@ -1,6 +1,10 @@
 package ghfixture
 
 var ExpectedChecks = []string{
+	"relay rejects non-loopback Host: /ready",
+	"relay rejects non-loopback Host: /owner",
+	"relay rejects non-loopback Host: /github-credentials",
+	"relay rejects non-loopback Host: /git-credentials",
 	"malformed working hosts: alias prepared",
 	"malformed working hosts: child exit preserved",
 	"malformed working hosts: lost intent reported",

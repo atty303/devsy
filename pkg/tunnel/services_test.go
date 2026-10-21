@@ -13,6 +13,8 @@ import (
 
 const testCtxName = "default"
 
+const testServiceOwner = "fixture-owner"
+
 // newConfigWithExitAfterTimeout returns a *config.Config whose default
 // context sets EXIT_AFTER_TIMEOUT to the given value.
 func newConfigWithExitAfterTimeout(value string) *config.Config {
@@ -116,7 +118,7 @@ func TestBuildCredentialsCommand_NoSigningKey(t *testing.T) {
 func TestDisabledGitHubServicePreservesLegacyAgentCommand(t *testing.T) {
 	opts := RunServicesOptions{
 		User:                       "root",
-		HostOwner:                  "fixture-owner",
+		HostOwner:                  testServiceOwner,
 		ConfigureGitCredentials:    true,
 		ConfigureDockerCredentials: true,
 	}
@@ -127,13 +129,13 @@ func TestDisabledGitHubServicePreservesLegacyAgentCommand(t *testing.T) {
 	assert.Contains(t, command, "--configure-docker-helper")
 	opts.ConfigureGitHubCredentials = true
 	command = buildCredentialsCommand(context.Background(), opts)
-	assert.Contains(t, command, "--host-owner fixture-owner")
+	assert.Contains(t, command, "--host-owner "+testServiceOwner)
 	assert.Contains(t, command, "--configure-github-helper")
 }
 
 func TestOptionalGitHubServiceFailurePreservesUnrelatedServices(t *testing.T) {
 	opts := RunServicesOptions{
-		User: "vscode", HostOwner: "fixture-owner", ConfigureGitHubCredentials: true,
+		User: "vscode", HostOwner: testServiceOwner, ConfigureGitHubCredentials: true,
 		ConfigureGitCredentials: true, ConfigureDockerCredentials: true,
 		ConfigureGitSSHSignatureHelper: true, ForwardPorts: true,
 	}
@@ -144,7 +146,7 @@ func TestOptionalGitHubServiceFailurePreservesUnrelatedServices(t *testing.T) {
 		func(current RunServicesOptions) error {
 			calls++
 			if current.ConfigureGitHubCredentials {
-				return errors.New("optional service unavailable")
+				return errUnsupportedGitHubServiceOptions
 			}
 			expected := opts
 			expected.ConfigureGitHubCredentials = false
@@ -180,6 +182,33 @@ func TestOptionalGitHubServiceDoesNotRetrySuccessDisabledOrCanceled(t *testing.T
 				RunServicesOptions{ConfigureGitHubCredentials: mode != disabledPreparation},
 				func(RunServicesOptions) error {
 					calls++
+					return want
+				},
+			)
+			assert.ErrorIs(t, err, want)
+			assert.Equal(t, 1, calls)
+		})
+	}
+}
+
+func TestOptionalGitHubServicePreservesPolicyAfterUnrelatedFailure(t *testing.T) {
+	for _, message := range []string{"SSH transport closed", "relay stopped after readiness", "unrelated helper failed"} {
+		t.Run(message, func(t *testing.T) {
+			want := errors.New(message)
+			calls := 0
+			opts := RunServicesOptions{
+				ConfigureGitHubCredentials: true,
+				HostOwner:                  testServiceOwner,
+			}
+			err := runOptionalGitHubServices(
+				t.Context(),
+				opts,
+				func(current RunServicesOptions) error {
+					calls++
+					assert.Equal(t, opts, current)
+					if !current.ConfigureGitHubCredentials {
+						return nil
+					}
 					return want
 				},
 			)

@@ -67,7 +67,7 @@ func (p servicePreparation) startWithLifetime(
 	go func() {
 		completion.err = p.run()
 		if completion.err != nil && ctx.Err() == nil {
-			log.Debug("credential services stopped unexpectedly")
+			log.Warn("credential services stopped unexpectedly")
 		}
 		close(completion.done)
 	}()

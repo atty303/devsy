@@ -8,6 +8,7 @@ import (
 	"github.com/devsy-org/devsy/pkg/config"
 	"github.com/devsy-org/devsy/pkg/credentials"
 	daemon "github.com/devsy-org/devsy/pkg/daemon/platform"
+	"github.com/devsy-org/devsy/pkg/log"
 	"github.com/devsy-org/devsy/pkg/tunnel"
 	"golang.org/x/crypto/ssh"
 )
@@ -46,7 +47,11 @@ func StartPreparedServicesDaemon(
 	opts StartServicesDaemonOptions,
 ) credentials.Readiness {
 	services, err := daemonServiceOptions(ctx, opts)
-	if err != nil || opts.User == "" {
+	if err != nil {
+		log.Warn("credential services preparation unavailable")
+		return credentials.Readiness{GitHubState: "unavailable"}
+	}
+	if opts.User == "" {
 		return credentials.Readiness{GitHubState: "unavailable"}
 	}
 	return tunnel.StartPreparedServices(ctx, services)

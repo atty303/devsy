@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -223,13 +225,14 @@ func runServicesIteration(
 	}()
 
 	command := buildCredentialsCommand(ctx, opts)
+	diagnostic := &boundedPreparationOutput{}
 
 	err = devssh.Run(cancelCtx, devssh.RunOptions{
 		Client:  opts.ContainerClient,
 		Command: command,
 		Stdin:   stdinReader,
 		Stdout:  stdoutWriter,
-		Stderr:  writer,
+		Stderr:  io.MultiWriter(writer, diagnostic),
 	})
 	if err != nil {
 		// Drain errChan to allow goroutine to exit cleanly
@@ -237,7 +240,7 @@ func runServicesIteration(
 		case <-errChan:
 		default:
 		}
-		return err
+		return classifyServicesStartupError(err, diagnostic)
 	}
 	return <-errChan
 }
@@ -286,13 +289,42 @@ func runOptionalGitHubServices(
 	run func(RunServicesOptions) error,
 ) error {
 	err := run(opts)
-	if err == nil || !opts.ConfigureGitHubCredentials || ctx.Err() != nil {
+	if !errors.Is(err, errUnsupportedGitHubServiceOptions) ||
+		!opts.ConfigureGitHubCredentials || ctx.Err() != nil {
 		return err
 	}
 	log.Debug("GitHub credential service unavailable; retrying other credential services")
 	opts.ConfigureGitHubCredentials = false
 	opts.HostOwner = ""
 	return run(opts)
+}
+
+var errUnsupportedGitHubServiceOptions = errors.New(
+	"agent does not support GitHub credential service options",
+)
+
+func classifyServicesStartupError(err error, diagnostic *boundedPreparationOutput) error {
+	var exit *devssh.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode == 0 || diagnostic.overflow {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(diagnostic.data))
+	for {
+		var record struct {
+			Kind    string `json:"kind"`
+			Message string `json:"message"`
+		}
+		if decoder.Decode(&record) != nil {
+			return err
+		}
+		if record.Kind != "error" {
+			continue
+		}
+		switch record.Message {
+		case "unknown flag: --host-owner", "unknown flag: --configure-github-helper":
+			return fmt.Errorf("%w: %w", errUnsupportedGitHubServiceOptions, err)
+		}
+	}
 }
 
 // buildPortAttributeResolver loads port attributes from the container result.

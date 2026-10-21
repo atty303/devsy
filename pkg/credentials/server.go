@@ -176,6 +176,10 @@ func newPreparedHandler(
 	}
 
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !loopbackHost(request.Host) {
+			http.Error(writer, "loopback Host required", http.StatusForbidden)
+			return
+		}
 		log.Debugf("incoming client connection: path=%s", request.URL.Path)
 		handler, ok := routes[request.URL.Path]
 		if !ok {
@@ -186,6 +190,18 @@ func newPreparedHandler(
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 		}
 	})
+}
+
+func loopbackHost(authority string) bool {
+	host, _, err := net.SplitHostPort(authority)
+	if err != nil {
+		host = authority
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimPrefix(strings.TrimSuffix(host, "]"), "["))
+	return ip != nil && ip.IsLoopback()
 }
 
 func pinnedGitHubHandler(status Readiness) credentialsHandlerFunc {

@@ -151,7 +151,7 @@ func TestServicePreparationReportsFailureThroughoutServiceLifetime(t *testing.T)
 		{name: cancelledPreparation, enabled: true, cancelled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logs := log.InitTestObserved(t, zapcore.DebugLevel)
+			logs := log.InitTestObserved(t, zapcore.WarnLevel)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			fail := make(chan struct{})

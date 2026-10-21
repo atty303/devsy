@@ -12,7 +12,7 @@ import (
 
 func (c *checks) run() bool {
 	for _, phase := range []func() bool{
-		c.checkInstallation, c.checkGuestRegistrations, c.checkDispatcher, c.checkEnvfile, c.checkDispatch,
+		c.checkInstallation, c.checkRelayHosts, c.checkGuestRegistrations, c.checkDispatcher, c.checkEnvfile, c.checkDispatch,
 		c.checkSelection, c.checkSelfReferences, c.checkPreferences, c.checkAuthentication, c.checkLocalAuthentication,
 		c.checkKeyring, c.checkExtensions, c.checkConcurrentUpdates, c.checkWriteback,
 		c.checkMalformedWorkingHosts, c.checkOrphanChildren,

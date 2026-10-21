@@ -174,6 +174,10 @@ jobs:
           -run '^(TestNative.*|TestHostLookupEnvironmentAndGuestEnvironmentAreIndependent|TestRegisteredGuestDeclinesAmbiguousKeyringResult)$'
       - name: test strict fixture report validation
         run: go test -race -count=1 -v ./e2e/framework/ghfixture
+      - name: test native credential service boundaries
+        run: >-
+          go test -race -count=1 -v -timeout 2m ./pkg/tunnel ./pkg/credentials
+          -run '^(TestCredentials.*Host.*|TestOptionalGitHubService.*|TestServicesStartup.*)$'
 
   windows-transport-tests:
     name: Windows Transport Tests

@@ -36,7 +36,7 @@ func TestReadinessRejectsDeadTransportWithoutCredentialLookup(t *testing.T) {
 	client := &githubCredentialsClient{code: codes.Unavailable}
 	h := newPreparedHandler(context.Background(), client, "vscode", readyFixture())
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://localhost/ready", nil))
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Zero(t, client.calls.Load())
 }
@@ -46,7 +46,7 @@ func TestCredentialPostPinsVerifiedHostAndInstanceBeforeRPC(t *testing.T) {
 	identity := readyFixture()
 	h := newPreparedHandler(context.Background(), client, identity.Owner, identity)
 	for _, pair := range [][2]string{{"", ""}, {"old-instance", identity.HostOwner}, {identity.Instance, "other-host"}} {
-		r := httptest.NewRequest(http.MethodPost, "/github-credentials", nil)
+		r := httptest.NewRequest(http.MethodPost, "http://localhost/github-credentials", nil)
 		r.Header.Set(HeaderCredentialsInstance, pair[0])
 		r.Header.Set(HeaderCredentialsHostOwner, pair[1])
 		w := httptest.NewRecorder()
@@ -56,7 +56,7 @@ func TestCredentialPostPinsVerifiedHostAndInstanceBeforeRPC(t *testing.T) {
 		require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 	}
 	require.Zero(t, client.calls.Load())
-	r := httptest.NewRequest(http.MethodPost, "/github-credentials", nil)
+	r := httptest.NewRequest(http.MethodPost, "http://localhost/github-credentials", nil)
 	r.Header.Set(HeaderCredentialsInstance, identity.Instance)
 	r.Header.Set(HeaderCredentialsHostOwner, identity.HostOwner)
 	w := httptest.NewRecorder()
@@ -93,11 +93,17 @@ func TestGitHubHTTPBoundaryMethodsStatusesAndHeaders(t *testing.T) {
 			client := &githubCredentialsClient{code: tc.code}
 			h := newCredentialsHandler(context.Background(), client, "guest")
 			get := httptest.NewRecorder()
-			h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/github-credentials", nil))
+			h.ServeHTTP(
+				get,
+				httptest.NewRequest(http.MethodGet, "http://localhost/github-credentials", nil),
+			)
 			require.Equal(t, http.StatusMethodNotAllowed, get.Code)
 			require.Zero(t, client.calls.Load())
 			post := httptest.NewRecorder()
-			h.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/github-credentials", nil))
+			h.ServeHTTP(
+				post,
+				httptest.NewRequest(http.MethodPost, "http://localhost/github-credentials", nil),
+			)
 			require.Equal(t, http.StatusOK, post.Code)
 			require.Equal(t, "application/json", post.Header().Get("Content-Type"))
 			require.Equal(t, "no-store", post.Header().Get("Cache-Control"))
@@ -112,7 +118,7 @@ func TestGitHubHTTPBoundaryMethodsStatusesAndHeaders(t *testing.T) {
 func TestGitHubHTTPMissingOptionalMethod(t *testing.T) {
 	h := newCredentialsHandler(context.Background(), &mockCredentialsClient{}, "guest")
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/github-credentials", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "http://localhost/github-credentials", nil))
 	require.JSONEq(t, `{"status":"rpc_unavailable"}`, w.Body.String())
 	require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 }
