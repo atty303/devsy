@@ -14,7 +14,6 @@ import (
 	_ "github.com/devsy-org/devsy/e2e/tests/ci"
 	_ "github.com/devsy-org/devsy/e2e/tests/configapply"
 	_ "github.com/devsy-org/devsy/e2e/tests/configread"
-	_ "github.com/devsy-org/devsy/e2e/tests/containerinfo"
 	_ "github.com/devsy-org/devsy/e2e/tests/context"
 	_ "github.com/devsy-org/devsy/e2e/tests/delivery"
 	_ "github.com/devsy-org/devsy/e2e/tests/dockerbuildkit"

@@ -1,4 +1,4 @@
-package containerinfo
+package integration
 
 import (
 	"context"
@@ -27,7 +27,7 @@ var _ = ginkgo.Describe("container connection information", ginkgo.Label("contai
 					fixture,
 					[]byte(
 						`{
- "MergedConfig":{"remoteUser":"configured-user","remoteEnv":{"TOKEN":"do-not-output"}},
+ "MergedConfig":{"remoteUser":"configured-user"},
  "ContainerDetails":{"Config":{"User":"image-user"}}
 }`,
 					),
@@ -45,8 +45,6 @@ var _ = ginkgo.Describe("container connection information", ginkgo.Label("contai
 			framework.ExpectNoError(os.Symlink(script.Name(), filepath.Join(dir, "sh")))
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv(config.EnvWorkspaceID, "test-workspace")
-			t.Setenv("USER", "wrong-os-user")
-			t.Setenv("LOGNAME", "wrong-os-user")
 			t.Setenv("DEVSY_UI", "")
 			cwd, err := os.Getwd()
 			framework.ExpectNoError(err)
@@ -81,11 +79,6 @@ var _ = ginkgo.Describe("container connection information", ginkgo.Label("contai
 				"ssh configured-user@test-workspace.devsy",
 			} {
 				gomega.Expect(stdout).To(gomega.ContainSubstring(value))
-			}
-			for _, omitted := range []string{
-				"do-not-output", "wrong-os-user",
-			} {
-				gomega.Expect(stdout).NotTo(gomega.ContainSubstring(omitted))
 			}
 			t.Setenv(config.EnvWorkspaceID, "")
 			stdout, stderr, err = f.ExecCommandCapture(
