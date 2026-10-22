@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/devsy-org/devsy/e2e/framework"
 	pkgconfig "github.com/devsy-org/devsy/pkg/config"
@@ -168,6 +169,26 @@ var _ = ginkgo.Describe("testing up command", ginkgo.Label("up-workspaces"), fun
 
 		workspace, err := f.FindWorkspace(ctx, tempDir)
 		framework.ExpectNoError(err)
+
+		infoOutput, err := f.DevsySSH(
+			ctx,
+			workspace.ID,
+			"devsy container info --result-format json",
+		)
+		framework.ExpectNoError(err)
+		remoteUser, err := f.DevsySSH(ctx, workspace.ID, "id -un")
+		framework.ExpectNoError(err)
+		remoteUser = strings.TrimSpace(remoteUser)
+		sshHost := workspace.ID + pkgconfig.SSHHostSuffix
+		var info struct {
+			SSHCommand string `json:"sshCommand"`
+			SSHHost    string `json:"sshHost"`
+			RemoteUser string `json:"remoteUser"`
+		}
+		framework.ExpectNoError(json.Unmarshal([]byte(infoOutput), &info))
+		gomega.Expect(info.SSHHost).To(gomega.Equal(sshHost))
+		gomega.Expect(info.RemoteUser).To(gomega.Equal(remoteUser))
+		gomega.Expect(info.SSHCommand).To(gomega.Equal("ssh " + remoteUser + "@" + sshHost))
 
 		projectName := workspace.ID
 		eventsOutput, err := f.ExecCommandOutput(ctx, []string{
