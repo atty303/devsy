@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 
 	"github.com/devsy-org/devsy/e2e/framework"
 	pkgconfig "github.com/devsy-org/devsy/pkg/config"
@@ -147,7 +146,10 @@ var _ = ginkgo.Describe("testing up command", ginkgo.Label("up-workspaces"), fun
 	}, ginkgo.SpecTimeout(framework.TimeoutShort()))
 
 	ginkgo.It("create workspace without devcontainer.json", func(ctx context.Context) {
-		const providerName = "test-docker"
+		const (
+			providerName = "test-docker"
+			remoteUser   = "vscode"
+		)
 
 		f := framework.NewDefaultFramework(initialDir + "/bin")
 		tempDir, err := framework.CopyToTempDir("tests/up/testdata/no-devcontainer")
@@ -176,9 +178,6 @@ var _ = ginkgo.Describe("testing up command", ginkgo.Label("up-workspaces"), fun
 			"devsy container info --result-format json",
 		)
 		framework.ExpectNoError(err)
-		remoteUser, err := f.DevsySSH(ctx, workspace.ID, "id -un")
-		framework.ExpectNoError(err)
-		remoteUser = strings.TrimSpace(remoteUser)
 		sshHost := workspace.ID + pkgconfig.SSHHostSuffix
 		var info struct {
 			SSHCommand string `json:"sshCommand"`
