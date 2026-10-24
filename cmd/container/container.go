@@ -6,12 +6,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewContainerCmd(globalFlags *flags.GlobalFlags) *cobra.Command {
+// NewContainerCmd returns the container command. Cobra runs only the nearest
+// persistent pre-run hook, so the root hook is chained explicitly to keep
+// log-level validation and context-deletion recovery in effect.
+func NewContainerCmd(
+	globalFlags *flags.GlobalFlags,
+	rootPreRunE func(*cobra.Command, []string) error,
+) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "container",
 		Short: "Inspect the current container",
-		PersistentPreRun: func(_ *cobra.Command, _ []string) {
+		PersistentPreRunE: func(command *cobra.Command, args []string) error {
 			envfile.Apply()
+			if rootPreRunE != nil {
+				return rootPreRunE(command, args)
+			}
+			return nil
 		},
 	}
 	cmd.AddCommand(newInfoCmd(globalFlags))

@@ -10,13 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	containerCommandName = "container"
+	infoCommandName      = "info"
+)
+
 func TestContainerInfoFailureRendering(t *testing.T) {
 	t.Setenv(config.EnvWorkspaceID, "")
 	root, _ := BuildRoot()
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetArgs([]string{
-		"container", "info", "--home", t.TempDir(),
+		containerCommandName, infoCommandName, "--home", t.TempDir(),
 		"--context", "not-configured", "--provider", "not-configured", "--result-format", "json",
 	})
 	err := root.Execute()
@@ -37,4 +42,14 @@ func TestContainerInfoFailureRendering(t *testing.T) {
 		require.Contains(t, string(raw), config.EnvWorkspaceID)
 		require.Contains(t, string(raw), "container_info_failed")
 	}
+}
+
+func TestContainerInfoRunsRootValidation(t *testing.T) {
+	t.Setenv(config.EnvWorkspaceID, "")
+	root, _ := BuildRoot()
+	root.SetArgs([]string{
+		containerCommandName, infoCommandName, "--log-level", "definitely-invalid",
+	})
+	err := root.Execute()
+	require.ErrorContains(t, err, "invalid log level")
 }

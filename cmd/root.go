@@ -422,7 +422,7 @@ func registerSubcommands(rootCmd *cobra.Command, globalFlags *flags.GlobalFlags)
 	rootCmd.AddCommand(
 		ci.NewCICmd(globalFlags),
 		cliconfig.NewConfigCmd(globalFlags),
-		container.NewContainerCmd(globalFlags),
+		container.NewContainerCmd(globalFlags, rootCmd.PersistentPreRunE),
 		context.NewContextCmd(globalFlags),
 		envcmd.NewEnvCmd(globalFlags),
 		feature.NewFeatureCmd(globalFlags),
