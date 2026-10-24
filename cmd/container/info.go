@@ -52,7 +52,11 @@ func newInfoCmd(globalFlags *flags.GlobalFlags) *cobra.Command {
 func readContainerInfo(ctx context.Context) (*containerInfo, error) {
 	workspaceID := os.Getenv(config.EnvWorkspaceID)
 	if workspaceID == "" {
-		return nil, fmt.Errorf("%s is missing; run inside a Devsy container", config.EnvWorkspaceID)
+		return nil, fmt.Errorf(
+			"%s is missing; Devsy workspace identity is unavailable here. "+
+				"recreate Docker Compose containers created before it was injected",
+			config.EnvWorkspaceID,
+		)
 	}
 	result, err := readInfoSetupResult(ctx)
 	if err != nil {
