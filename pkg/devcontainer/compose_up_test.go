@@ -10,6 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	composeUpTestWorkspaceID  = "workspace-name"
+	composeUpTestWorkspaceUID = "workspace-uid"
+	composeUpTestUserKey      = "FOO"
+	composeUpTestUserValue    = "bar"
+)
+
 func generateComposeTestEnvironment(
 	t *testing.T,
 	workspaceConfig *provider.AgentWorkspaceInfo,
@@ -21,18 +28,27 @@ func generateComposeTestEnvironment(
 	mergedConfig := &config.MergedDevContainerConfig{}
 	mergedConfig.ContainerEnv = containerEnv
 	project := r.generateDockerComposeUpProject(&composeUpParams{
-		parsedConfig:   &config.SubstitutedConfig{Config: &config.DevContainerConfig{}},
-		composeService: &composetypes.ServiceConfig{Name: "app"},
-		imageDetails:   &config.ImageDetails{},
-		mergedConfig:   mergedConfig,
+		parsedConfig: &config.SubstitutedConfig{Config: &config.DevContainerConfig{}},
+		composeService: &composetypes.ServiceConfig{
+			Name: composeSecretTestServiceName,
+		},
+		imageDetails: &config.ImageDetails{},
+		mergedConfig: mergedConfig,
 	})
-	return project.Services["app"].Environment
+	return project.Services[composeSecretTestServiceName].Environment
 }
 
 func testWorkspaceInfo() *provider.AgentWorkspaceInfo {
 	return &provider.AgentWorkspaceInfo{
-		Workspace: &provider.Workspace{ID: "workspace-name", UID: "workspace-uid"},
+		Workspace: &provider.Workspace{
+			ID:  composeUpTestWorkspaceID,
+			UID: composeUpTestWorkspaceUID,
+		},
 	}
+}
+
+func userContainerEnv() map[string]string {
+	return map[string]string{composeUpTestUserKey: composeUpTestUserValue}
 }
 
 func requireEnvValue(t *testing.T, env composetypes.MappingWithEquals, key, want string) {
@@ -45,14 +61,14 @@ func requireEnvValue(t *testing.T, env composetypes.MappingWithEquals, key, want
 
 func TestGenerateDockerComposeUpProjectInjectsWorkspaceIdentity(t *testing.T) {
 	env := generateComposeTestEnvironment(t, testWorkspaceInfo(), nil)
-	requireEnvValue(t, env, pkgconfig.EnvWorkspaceID, "workspace-name")
-	requireEnvValue(t, env, pkgconfig.EnvWorkspaceUID, "workspace-uid")
+	requireEnvValue(t, env, pkgconfig.EnvWorkspaceID, composeUpTestWorkspaceID)
+	requireEnvValue(t, env, pkgconfig.EnvWorkspaceUID, composeUpTestWorkspaceUID)
 }
 
 func TestGenerateDockerComposeUpProjectPreservesUserContainerEnv(t *testing.T) {
-	env := generateComposeTestEnvironment(t, testWorkspaceInfo(), map[string]string{"FOO": "bar"})
-	requireEnvValue(t, env, "FOO", "bar")
-	requireEnvValue(t, env, pkgconfig.EnvWorkspaceID, "workspace-name")
+	env := generateComposeTestEnvironment(t, testWorkspaceInfo(), userContainerEnv())
+	requireEnvValue(t, env, composeUpTestUserKey, composeUpTestUserValue)
+	requireEnvValue(t, env, pkgconfig.EnvWorkspaceID, composeUpTestWorkspaceID)
 }
 
 func TestGenerateDockerComposeUpProjectWorkspaceIdentityWinsOverUserEnv(t *testing.T) {
@@ -60,14 +76,14 @@ func TestGenerateDockerComposeUpProjectWorkspaceIdentityWinsOverUserEnv(t *testi
 		pkgconfig.EnvWorkspaceID:  "user-id",
 		pkgconfig.EnvWorkspaceUID: "user-uid",
 	})
-	requireEnvValue(t, env, pkgconfig.EnvWorkspaceID, "workspace-name")
-	requireEnvValue(t, env, pkgconfig.EnvWorkspaceUID, "workspace-uid")
+	requireEnvValue(t, env, pkgconfig.EnvWorkspaceID, composeUpTestWorkspaceID)
+	requireEnvValue(t, env, pkgconfig.EnvWorkspaceUID, composeUpTestWorkspaceUID)
 }
 
 func TestGenerateDockerComposeUpProjectDoesNotMutateMergedContainerEnv(t *testing.T) {
-	containerEnv := map[string]string{"FOO": "bar"}
+	containerEnv := userContainerEnv()
 	generateComposeTestEnvironment(t, testWorkspaceInfo(), containerEnv)
-	require.Equal(t, map[string]string{"FOO": "bar"}, containerEnv)
+	require.Equal(t, userContainerEnv(), containerEnv)
 }
 
 func TestGenerateDockerComposeUpProjectWithoutWorkspaceConfig(t *testing.T) {
@@ -76,12 +92,8 @@ func TestGenerateDockerComposeUpProjectWithoutWorkspaceConfig(t *testing.T) {
 		"empty details": {Workspace: &provider.Workspace{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			env := generateComposeTestEnvironment(
-				t,
-				workspaceConfig,
-				map[string]string{"FOO": "bar"},
-			)
-			requireEnvValue(t, env, "FOO", "bar")
+			env := generateComposeTestEnvironment(t, workspaceConfig, userContainerEnv())
+			requireEnvValue(t, env, composeUpTestUserKey, composeUpTestUserValue)
 			require.NotContains(t, env, pkgconfig.EnvWorkspaceID)
 			require.NotContains(t, env, pkgconfig.EnvWorkspaceUID)
 		})
