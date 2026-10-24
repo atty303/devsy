@@ -38,7 +38,13 @@ unit:
 
     - name: e2e-runtime-helpers
       description: E2E runtime helper packages
-      packages: [./e2e/framework/runenv/..., ./e2e/framework/dockerwsl, ./e2e/framework/ginkgoreport, ./e2e/cmd/devsy-ci]
+      packages:
+        - ./e2e/framework/runenv/...
+        - ./e2e/framework/dockerwsl
+        - ./e2e/framework/ginkgoreport
+        - ./e2e/cmd/devsy-ci
+        - ./e2e/tests/ssh
+      require_tests: [TestProxyCommandExcerptProtectsFailureReport]
       args: [-race, -count=1, -timeout=5m]
 
     - name: e2e-framework
@@ -72,6 +78,21 @@ unit:
       os: [linux]
       packages: [./e2e/framework/ghfixture]
       args: [-race, -count=1, -timeout=90s]
+
+    - name: windows-detached-task-storage
+      description: native Windows detached task storage and process ownership
+      os: [windows]
+      packages: [./pkg/command, ./pkg/task, ./pkg/workspace]
+      require_tests: [TestTaskQueriesRejectUncertainRecords, TestGetWaitsForWriterHoldingExclusiveFileHandle]
+      args: [-race, -count=1, -timeout=10m]
+
+    - name: windows-detached-workspace-lifecycle
+      description: native Windows detached workers, followers, and task results
+      os: [windows]
+      packages: [./cmd/workspace/up, ./cmd/workspace]
+      run: '^Test(Detached.*|DetachWorkspaceLabel.*|WorkerRecords.*|DuplicateWorkerCannotFailOwnerTask|FinalizeWorker.*|OpenTaskExitsWhenAlreadyCanceled|FollowTask.*|LogTailer.*|ResultEnvelopeFrom.*|EmitTaskTransition|ReportTaskStateJSON.*|TaskErrorMessage|TaskStatusEvent.*)$'
+      require_tests: [TestWorkerRecordsConfigAndClientErrors, TestDetachedWorkerCommitsBeforeWorkspaceWork, TestFollowTaskReconcilesExitedWorker]
+      args: [-race, -count=1, -timeout=10m]
 
     - name: windows-transport
       description: native Windows Docker transport
