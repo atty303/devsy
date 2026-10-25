@@ -17,6 +17,8 @@ const (
 
 func TestContainerInfoFailureRendering(t *testing.T) {
 	t.Setenv(config.EnvWorkspaceID, "")
+	// --home sets process-wide EnvHome; register a restore before it leaks.
+	t.Setenv(config.EnvHome, "")
 	root, _ := BuildRoot()
 	var out bytes.Buffer
 	root.SetOut(&out)
