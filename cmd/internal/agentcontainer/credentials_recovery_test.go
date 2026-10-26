@@ -329,7 +329,7 @@ type recoveryFailedListener struct {
 
 func (l *recoveryFailedListener) Accept() (net.Conn, error) { return nil, l.err }
 
-func TestCredentialsRecoveryInitializationFailureReleasesPort(t *testing.T) {
+func TestCredentialsRecoveryHelperFailureKeepsServerUntilCancellation(t *testing.T) {
 	const missingUser = "devsy-relay-missing-user"
 	_, err := user.Lookup(missingUser)
 	require.Error(t, err)
@@ -340,11 +340,21 @@ func TestCredentialsRecoveryInitializationFailureReleasesPort(t *testing.T) {
 	session := startRecoveryCommand(t, &CredentialsServerCmd{
 		User: missingUser, ConfigureDockerHelper: true,
 	}, port)
+	require.Eventually(t, func() bool {
+		owner, err := credentials.FetchOwner(context.Background(), port)
+		return err == nil && owner == missingUser
+	}, 3*time.Second, 10*time.Millisecond)
+	contender, err := claimPort(port)
+	if contender != nil {
+		_ = contender.Close()
+	}
+	require.ErrorIs(t, err, errPortOwnedByAnotherSession)
+	session.cancel()
 	select {
 	case err := <-session.done:
-		require.Error(t, err)
+		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
-		t.Fatal("initialization failure did not exit")
+		t.Fatal("canceled server did not exit")
 	}
 	successor, err := claimPort(port)
 	require.NoError(t, err)
