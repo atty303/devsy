@@ -5,17 +5,14 @@
     {
       "repository": "atty303/devsy",
       "branch": "fix/credential-relay-remote-wait",
-      "checks": ["credential-relay"]
-    },
-    {
-      "repository": "atty303/devsy",
-      "branch": "atty303/gh-relay",
-      "checks": ["gh-relay"]
-    },
-    {
-      "repository": "atty303/devsy",
-      "branch": "atty303/container-info",
-      "checks": []
+      "checks": [
+        "credential-relay"
+      ],
+      "resolution": {
+        "before_tree": "d9a47bf6ff1e82d65f13338c1bf3f88091d291f1",
+        "incoming": "59ca45abeea3e73a426abc070a0179a2aaf9ccbe",
+        "patch": "hack/fork_release/patches/credential-relay-main.patch"
+      }
     }
   ],
   "patches": [
