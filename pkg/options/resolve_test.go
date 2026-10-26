@@ -834,15 +834,16 @@ func TestResolveAgentMicrosandboxConfig(t *testing.T) {
 }
 
 func TestResolveAgentDownloadURL(t *testing.T) {
+	t.Setenv(config.EnvAgentURL, "")
 	const (
 		localHost         = "http://localhost:8080/"
 		localHostTrail    = "http://localhost:8080///"
 		exampleAgent      = "https://example.com/agent/"
 		exampleAgentTrail = "https://example.com/agent///"
 		exampleAgentPlain = "https://example.com/agent"
-		defaultURL        = config.AgentLatestDownloadURL
 	)
 
+	defaultURL := config.DefaultAgentDownloadURL()
 	cases := []struct {
 		name       string
 		envURL     string

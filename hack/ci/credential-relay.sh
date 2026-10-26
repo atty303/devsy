@@ -41,6 +41,10 @@ cleanup() {
 trap cleanup EXIT
 if [[ ${1:-} = --cleanup ]]; then exit; fi
 mkdir -p "$root/home" "$root/workspace/.devcontainer"
+# Linux setup chowns the bind mount to root. Keep these fixture directories
+# removable by the runner; their enclosing mktemp directory remains private.
+chmod 700 "$root"
+chmod a+rwx "$root/workspace" "$root/workspace/.devcontainer"
 cd "$root/home"
 cat > "$root/helper" <<'HELPER'
 #!/bin/sh
@@ -95,8 +99,8 @@ processes() {
 }
 assert_single_start() {
   local name=${names[$1]} count
-  count=$(grep -c 'execute SSH server command:.*credentials-server' "$root/$name.log")
-  if [[ $count != 1 ]]; then echo "FAIL $name recreated its services command $count times" >&2; return 1; fi
+  count=$(grep -c 'waiting for credentials port:' "$root/$name.log" || true)
+  if [[ $count != 1 ]]; then echo "FAIL $name entered its credentials wait $count times" >&2; return 1; fi
 }
 winner() {
   for index in 1 2 3; do
