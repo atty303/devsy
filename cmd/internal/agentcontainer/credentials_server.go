@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/devsy-org/devsy/cmd/flags"
 	"github.com/devsy-org/devsy/pkg/agent/tunnel"
@@ -59,7 +63,9 @@ func NewCredentialsServerCmd(flags *flags.GlobalFlags) *cobra.Command {
 				return err
 			}
 
-			return cmd.Run(c.Context(), port)
+			ctx, stop := signal.NotifyContext(c.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return cmd.Run(ctx, port)
 		},
 	}
 	cliflags.Add(
@@ -98,28 +104,29 @@ func NewCredentialsServerCmd(flags *flags.GlobalFlags) *cobra.Command {
 }
 
 // Run runs the command logic.
-func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) error {
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) (runErr error) {
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	defer func() {
+		log.Infof("credentials services ended: user=%s port=%d pid=%d error=%v cause=%v",
+			cmd.User, port, os.Getpid(), runErr, context.Cause(runCtx))
+	}()
 
-	ln, err := cmd.claimPort(ctx, port)
+	tunnelClient, err := connectCredentialsTunnel(runCtx, cancel)
 	if err != nil {
-		if errors.Is(err, errPortOwnedByAnotherSession) {
-			cmd.logPortOwnedByAnotherSession(ctx, port)
+		if runCtx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	ln, err := cmd.waitForPort(runCtx, port)
+	if err != nil {
+		if runCtx.Err() != nil {
 			return nil
 		}
 		return err
 	}
 	defer func() { _ = ln.Close() }()
-
-	tunnelClient, err := tunnelserver.NewTunnelClient(os.Stdin, os.Stdout)
-	if err != nil {
-		return fmt.Errorf("error creating tunnel client: %w", err)
-	}
-
-	if _, err := tunnelClient.Ping(runCtx, &tunnel.Empty{}); err != nil {
-		return fmt.Errorf("ping client: %w", err)
-	}
 
 	cmd.maybeForwardPorts(runCtx, tunnelClient)
 	githubState := "disabled"
@@ -138,27 +145,112 @@ func (cmd *CredentialsServerCmd) Run(ctx context.Context, port int) error {
 		GitHubAllowed: cmd.ConfigureGitHubHelper,
 		GitHubState:   githubState,
 	}
+	setupDone := make(chan struct{})
+	cleanupGitHelper := func() {}
+	cleanupGitSigning := func() {}
+	ln = &credentialsListener{Listener: ln, cleanup: func() {
+		<-setupDone
+		cleanupGitSigning()
+		cleanupGitHelper()
+		log.Infof("credentials helper cleanup completed: user=%s port=%d pid=%d", cmd.User, port, os.Getpid())
+	}}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- credentials.RunPreparedCredentialsServer(runCtx, ln, tunnelClient, status) }()
 
 	if err := cmd.configureDockerHelper(port); err != nil {
 		log.Warnf("Docker credentials setup unavailable: %v", err)
 	}
-
 	if err := configureGitUserLocally(runCtx, cmd.User, tunnelClient); err != nil {
 		log.Warnf("error configuring git user: %v", err)
 	}
-
-	cleanupGitHelper, err := cmd.configureGitCredentialHelper(runCtx, port)
+	cleanupGitHelper, err = cmd.configureGitCredentialHelper(runCtx, port)
 	if err != nil {
 		log.Warnf("Git credentials setup unavailable: %v", err)
 	}
-	defer cleanupGitHelper()
-
-	cleanupGitSigning := cmd.configureGitSigningKey()
-	defer cleanupGitSigning()
+	cleanupGitSigning = cmd.configureGitSigningKey()
+	close(setupDone)
 
 	return <-serverDone
+}
+
+func connectCredentialsTunnel(
+	ctx context.Context,
+	cancel context.CancelCauseFunc,
+) (tunnel.TunnelClient, error) {
+	client, err := tunnelserver.NewTunnelClientWithContext(ctx,
+		&credentialsTunnelReader{Reader: os.Stdin, cancel: cancel}, os.Stdout)
+	if err != nil {
+		return nil, fmt.Errorf("error creating tunnel client: %w", err)
+	}
+	if _, err := client.Ping(ctx, &tunnel.Empty{}); err != nil {
+		return nil, fmt.Errorf("ping client: %w", err)
+	}
+	return client, nil
+}
+
+type credentialsTunnelReader struct {
+	io.Reader
+	cancel context.CancelCauseFunc
+}
+
+func (r *credentialsTunnelReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err != nil {
+		r.cancel(err)
+	}
+	return n, err
+}
+
+type credentialsListener struct {
+	net.Listener
+	cleanup func()
+	once    sync.Once
+	err     error
+}
+
+func (l *credentialsListener) Close() error {
+	l.once.Do(func() {
+		l.cleanup()
+		l.err = l.Listener.Close()
+	})
+	return l.err
+}
+
+func (cmd *CredentialsServerCmd) waitForPort(ctx context.Context, port int) (net.Listener, error) {
+	waiting := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		ln, err := cmd.claimPort(ctx, port)
+		if err == nil {
+			log.Infof(
+				"credentials port acquired: user=%s port=%d pid=%d",
+				cmd.User,
+				port,
+				os.Getpid(),
+			)
+			return ln, nil
+		}
+		if !errors.Is(err, errPortOwnedByAnotherSession) {
+			return nil, err
+		}
+		if !waiting {
+			log.Infof(
+				"waiting for credentials port: user=%s port=%d pid=%d",
+				cmd.User,
+				port,
+				os.Getpid(),
+			)
+			cmd.logPortOwnedByAnotherSession(ctx, port)
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // errPortOwnedByAnotherSession marks a bind failure as another session
@@ -186,20 +278,20 @@ func (cmd *CredentialsServerCmd) logPortOwnedByAnotherSession(ctx context.Contex
 	switch {
 	case err != nil:
 		log.Debugf(
-			"skipping credentials server for user %s: port %d is taken and its owner could not be determined: %v",
+			"waiting to start credentials server for user %s: port %d is taken and its owner could not be determined: %v",
 			cmd.User,
 			port,
 			err,
 		)
 	case owner == "" || owner == cmd.User:
 		log.Debugf(
-			"skipping credentials server for user %s: another session already provides it on port %d",
+			"waiting to start credentials server for user %s: another session already provides it on port %d",
 			cmd.User,
 			port,
 		)
 	default:
 		log.Warnf(
-			"credentials server for user %s was not started: port %d is already owned by user %s's session; "+
+			"credentials server for user %s is waiting: port %d is already owned by user %s's session; "+
 				"git/docker/signing credential helpers for %s will not work until that session ends",
 			cmd.User,
 			port,
