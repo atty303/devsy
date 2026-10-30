@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	gitpkg "github.com/devsy-org/devsy/pkg/git"
@@ -16,6 +17,8 @@ type projectSecretContext struct {
 	config  *secrets.ProjectConfig
 	sources map[string]secrets.Source
 }
+
+const gitInspectionRepositoryEnv = "DEVSY_GIT_INSPECTION_REPOSITORY"
 
 func (p *projectSecretContext) attachedSecrets() []string {
 	if p == nil || p.config == nil {
@@ -97,7 +100,7 @@ func (cmd *UpCmd) discoverRemoteProjectSecrets(
 	source *provider2.WorkspaceSource,
 ) (*projectSecretContext, error) {
 	info := &gitpkg.GitInfo{
-		Repository: source.GitRepository,
+		Repository: gitInspectionRepository(source.GitRepository),
 		Branch:     source.GitBranch,
 		Commit:     source.GitCommit,
 		PR:         source.GitPRReference,
@@ -122,6 +125,13 @@ func (cmd *UpCmd) discoverRemoteProjectSecrets(
 		return nil, err
 	}
 	return &projectSecretContext{config: cfg, sources: sources}, nil
+}
+
+func gitInspectionRepository(repository string) string {
+	if inspectionRepository := os.Getenv(gitInspectionRepositoryEnv); inspectionRepository != "" {
+		return inspectionRepository
+	}
+	return repository
 }
 
 func (cmd *UpCmd) readRemoteProjectConfig(

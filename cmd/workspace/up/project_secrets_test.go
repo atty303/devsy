@@ -266,6 +266,50 @@ func TestDiscoverRemoteProjectSecrets_PinsImmutableCommitSHA(t *testing.T) {
 	require.Equal(t, commitA, source.GitCommit, "rediscovered source must remain pinned to commitA")
 }
 
+func TestDiscoverRemoteProjectSecrets_InspectionRepositoryDoesNotReplaceWorkspaceRepository(
+	t *testing.T,
+) {
+	t.Setenv("SOPS_AGE_KEY", testProjectAgeIdentity)
+
+	workspaceGitDir := t.TempDir()
+	setupTestGitRepoWithDevContainer(t, workspaceGitDir)
+
+	inspectionGitDir := t.TempDir()
+	runInspectionGit, _ := setupTestGitRepoWithDevContainer(t, inspectionGitDir)
+	require.NoError(
+		t,
+		os.WriteFile(
+			filepath.Join(inspectionGitDir, "inspection.txt"),
+			[]byte("inspection endpoint"),
+			0o600,
+		),
+	)
+	runInspectionGit("add", "inspection.txt")
+	runInspectionGit("commit", "-m", "inspection endpoint commit")
+	inspectionCommit := runInspectionGit("rev-parse", "HEAD")
+	t.Setenv(gitInspectionRepositoryEnv, inspectionGitDir)
+
+	source := &provider.WorkspaceSource{
+		GitRepository: workspaceGitDir,
+		GitBranch:     "main",
+	}
+	projectCtx, err := (&UpCmd{}).discoverProjectSecrets(context.Background(), source)
+	require.NoError(t, err)
+	require.NotNil(t, projectCtx)
+	require.Equal(
+		t,
+		workspaceGitDir,
+		source.GitRepository,
+		"the workspace clone must retain its original repository",
+	)
+	require.Equal(
+		t,
+		inspectionCommit,
+		source.GitCommit,
+		"inspection must pin the commit from the host-reachable repository",
+	)
+}
+
 func TestDiscoverProjectSecrets_RejectsAbsolutePaths(t *testing.T) {
 	root := t.TempDir()
 	devcontainerDir := filepath.Join(root, ".devcontainer")
