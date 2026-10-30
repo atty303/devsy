@@ -280,6 +280,7 @@ func passthroughExitCode(err error, machineMode bool) (int, bool) {
 		return sshExitErr.ExitStatus(), true
 	}
 	if execExitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		log.Debugf("command process exited: %v", err)
 		if machineMode {
 			renderCLIError(
 				clierr.Classify(fmt.Errorf(

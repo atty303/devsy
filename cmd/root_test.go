@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -314,4 +316,25 @@ func TestExitCodeForErrorPreservesWorkspaceCommandExit(t *testing.T) {
 		err := fmt.Errorf("execute workspace command: %w", &workspace.CommandExitError{Code: 17})
 		assert.Equal(t, 17, exitCodeForError(err, machine))
 	}
+}
+
+func TestPassthroughExecExitLogsWrappedCause(t *testing.T) {
+	log.Init(log.Config{Verbosity: 2, Format: logOutputJSON})
+	var sink bytes.Buffer
+	remove := log.AddSink(&sink)
+	defer remove()
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd.exe", "/c", "exit 128")
+	} else {
+		cmd = exec.Command("sh", "-c", "exit 128")
+	}
+	err := cmd.Run()
+	require.Error(t, err)
+
+	code, ok := passthroughExitCode(fmt.Errorf("workspace agent setup: %w", err), false)
+	assert.True(t, ok)
+	assert.Equal(t, 128, code)
+	assert.Contains(t, sink.String(), "workspace agent setup: exit status 128")
 }
